@@ -78,7 +78,7 @@ class ActivitySnapshot:
 @dataclass(frozen=True)
 class PomodoroState:
     running: bool
-    minutes: int
+    minutes: float
     started_at: Optional[datetime]
     ends_at: Optional[datetime]
     seconds_remaining: float
@@ -87,7 +87,7 @@ class PomodoroState:
 @dataclass(frozen=True)
 class PomodoroCompletedEvent:
     completed_at: datetime
-    minutes: int
+    minutes: float
 
 
 @dataclass(frozen=True)
@@ -108,8 +108,8 @@ POLL_INTERVAL_S: float = 1.0
 IDLE_THRESHOLD_S: float = 30.0
 AWAY_THRESHOLD_S: float = 120.0
 SWITCH_WINDOW_S: float = 60.0
-POMODORO_MIN_MINUTES: int = 1
-POMODORO_MAX_MINUTES: int = 180
+POMODORO_MIN_MINUTES: float = 0.05
+POMODORO_MAX_MINUTES: float = 180.0
 SCREEN_AI_DEFAULT_INTERVAL_S: float = 10.0
 SCREEN_AI_MAX_STALENESS_S: float = 14.0
 SCREEN_AI_SCREENSHOT_TIMEOUT_S: float = 3.0
@@ -1011,22 +1011,23 @@ class ActivityTracker:
     # ------------------------------------------------------------------
     # Pomodoro
     # ------------------------------------------------------------------
-    def pomodoro_start(self, minutes: int) -> PomodoroState:
-        if not isinstance(minutes, int) or isinstance(minutes, bool):
-            raise ValueError("minutes must be an int")
-        if not (POMODORO_MIN_MINUTES <= minutes <= POMODORO_MAX_MINUTES):
+    def pomodoro_start(self, minutes: float) -> PomodoroState:
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)):
+            raise ValueError("minutes must be a number")
+        minutes_f = float(minutes)
+        if not (POMODORO_MIN_MINUTES <= minutes_f <= POMODORO_MAX_MINUTES):
             raise ValueError(
                 f"minutes must be in [{POMODORO_MIN_MINUTES},{POMODORO_MAX_MINUTES}]"
             )
         now = _utcnow()
-        ends = now + timedelta(minutes=minutes)
+        ends = now + timedelta(minutes=minutes_f)
         with self._pomodoro_lock:
             self._pomodoro = PomodoroState(
                 running=True,
-                minutes=minutes,
+                minutes=minutes_f,
                 started_at=now,
                 ends_at=ends,
-                seconds_remaining=float(minutes) * 60.0,
+                seconds_remaining=minutes_f * 60.0,
             )
             return self._pomodoro
 
@@ -1159,7 +1160,7 @@ def current_state() -> ActivitySnapshot:
     return tracker.current()
 
 
-def pomodoro_start(minutes: int) -> PomodoroState:
+def pomodoro_start(minutes: float) -> PomodoroState:
     return _get_or_create().pomodoro_start(minutes)
 
 
@@ -1171,7 +1172,7 @@ def pomodoro_status() -> PomodoroState:
     return _get_or_create().pomodoro_status()
 
 
-def start_pomodoro(minutes: int) -> Tuple[datetime, datetime]:
+def start_pomodoro(minutes: float) -> Tuple[datetime, datetime]:
     """Compatibility wrapper used by main.py routes."""
     state = pomodoro_start(minutes)
     if state.started_at is None or state.ends_at is None:

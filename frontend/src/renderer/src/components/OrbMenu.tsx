@@ -3,16 +3,55 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type { ActivePanel } from '../store'
 import { useTerpPetStore } from '../store'
 
+type OrbId = Exclude<ActivePanel, null>
+
+const Stopwatch = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="14" r="7" />
+    <path d="M12 14V10" />
+    <path d="M14.5 11.5l1.5-1.5" />
+    <path d="M9 3h6" />
+    <path d="M12 3v3" />
+  </svg>
+)
+
+const Clipboard = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="6" y="4" width="12" height="17" rx="2.5" />
+    <rect x="9" y="2.5" width="6" height="3.5" rx="1" />
+    <path d="M9 11h6" />
+    <path d="M9 15h4" />
+  </svg>
+)
+
+const Brain = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 5a3 3 0 0 0-5.83-1A2.5 2.5 0 0 0 4 8a2.5 2.5 0 0 0 .5 4.5A2.5 2.5 0 0 0 6 17a3 3 0 0 0 6 1z" />
+    <path d="M12 5a3 3 0 0 1 5.83-1A2.5 2.5 0 0 1 20 8a2.5 2.5 0 0 1-.5 4.5A2.5 2.5 0 0 1 18 17a3 3 0 0 1-6 1z" />
+    <path d="M12 5v13" />
+  </svg>
+)
+
+const BarChart = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 20h16" />
+    <path d="M7 20v-6" />
+    <path d="M12 20V9" />
+    <path d="M17 20v-9" />
+    <path d="M7 11l5-5 3 3 4-4" />
+  </svg>
+)
+
 const items: Array<{
-  id: Exclude<ActivePanel, null>
+  id: OrbId
   label: string
-  glyph: string
+  Icon: () => React.JSX.Element
   angle: number
 }> = [
-  { id: 'pomodoro', label: 'Pomodoro', glyph: '25', angle: -175 },
-  { id: 'study-plan', label: 'Assignments', glyph: 'Due', angle: -140 },
-  { id: 'brain', label: 'Brain', glyph: 'BR', angle: -105 },
-  { id: 'stats', label: 'Stats', glyph: 'XP', angle: -75 }
+  { id: 'pomodoro', label: 'Pomodoro', Icon: Stopwatch, angle: -175 },
+  { id: 'study-plan', label: 'Assignments', Icon: Clipboard, angle: -140 },
+  { id: 'brain', label: 'Brain', Icon: Brain, angle: -105 },
+  { id: 'stats', label: 'Stats', Icon: BarChart, angle: -75 }
 ]
 
 export function OrbMenu(): React.JSX.Element {
@@ -36,12 +75,11 @@ export function OrbMenu(): React.JSX.Element {
         >
           {items.map((item, index) => {
             const radius = 132
-            // Mirror across the vertical axis when the pet is on the left so the
-            // arc fans into the screen instead of off the left edge.
             const angle = petSide === 'left' ? 180 - item.angle : item.angle
             const radians = (angle * Math.PI) / 180
             const x = Math.cos(radians) * radius
             const y = Math.sin(radians) * radius
+            const Icon = item.Icon
 
             return (
               <motion.button
@@ -54,8 +92,11 @@ export function OrbMenu(): React.JSX.Element {
                 exit={{ x: 0, y: 0, opacity: 0 }}
                 transition={{ delay: index * 0.035, type: 'spring', stiffness: 420, damping: 24 }}
                 onClick={() => setActivePanel(item.id)}
+                aria-label={item.label}
               >
-                <span>{item.glyph}</span>
+                <span className="orb-menu__icon" aria-hidden="true">
+                  <Icon />
+                </span>
                 <small>{item.label}</small>
               </motion.button>
             )

@@ -76,7 +76,7 @@ class ActivitySnapshot(BaseModel):
 class PomodoroState(BaseModel):
     running: bool = False
     ends_at: Optional[datetime] = None
-    minutes: int = 25
+    minutes: float = 25
 
 
 class BehaviorUpdate(BaseModel):
@@ -98,7 +98,7 @@ class BehaviorUpdate(BaseModel):
 
 
 class PomodoroStartRequest(BaseModel):
-    minutes: int = Field(25, ge=1, le=180)
+    minutes: float = Field(25, ge=0.05, le=180)
 
 
 class PomodoroStartResponse(BaseModel):

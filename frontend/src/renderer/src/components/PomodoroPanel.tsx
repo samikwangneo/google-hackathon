@@ -18,7 +18,9 @@ function secondsUntil(endIso: string | null, nowMs = Date.now()): number {
 export function PomodoroPanel(): React.JSX.Element {
   const pomodoro = useTerpPetStore((state) => state.pomodoro)
   const setPomodoro = useTerpPetStore((state) => state.setPomodoro)
-  const [minutes, setMinutes] = useState(pomodoro.minutes)
+  // Keep the raw input string so backspace-to-empty doesn't snap back to 0
+  // and decimals like "0.1" survive while the user is mid-typing.
+  const [minutesText, setMinutesText] = useState(String(pomodoro.minutes))
   const [now, setNow] = useState(() => Date.now())
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -27,6 +29,9 @@ export function PomodoroPanel(): React.JSX.Element {
     const tick = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(tick)
   }, [])
+
+  const minutes = parseFloat(minutesText)
+  const minutesValid = Number.isFinite(minutes) && minutes >= 0.05 && minutes <= 180
 
   const remaining = useMemo(() => secondsUntil(pomodoro.ends_at, now), [now, pomodoro.ends_at])
 
@@ -37,6 +42,7 @@ export function PomodoroPanel(): React.JSX.Element {
   }, [pomodoro.minutes, pomodoro.running, remaining])
 
   const handleStart = async (): Promise<void> => {
+    if (!minutesValid) return
     setPending(true)
     setError(null)
     try {
@@ -54,7 +60,7 @@ export function PomodoroPanel(): React.JSX.Element {
     setError(null)
     try {
       await stopPomodoro()
-      setPomodoro({ running: false, ends_at: null, minutes })
+      setPomodoro({ running: false, ends_at: null, minutes: minutesValid ? minutes : 25 })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not stop Pomodoro')
     } finally {
@@ -72,7 +78,9 @@ export function PomodoroPanel(): React.JSX.Element {
       <div className="panel__eyebrow">Focus Ritual</div>
       <h2>{pomodoro.running ? 'Session running' : 'Start a Pomodoro'}</h2>
       <div className="pomodoro-panel__timer">
-        {formatTime(pomodoro.running ? remaining : minutes * 60)}
+        {formatTime(
+          pomodoro.running ? remaining : Math.max(0, Math.round((minutesValid ? minutes : 0) * 60))
+        )}
       </div>
       <div className="pomodoro-panel__track" aria-hidden="true">
         <span style={{ width: `${progress}%` }} />
@@ -81,11 +89,14 @@ export function PomodoroPanel(): React.JSX.Element {
         Minutes
         <input
           type="number"
-          min="1"
+          inputMode="decimal"
+          step="0.05"
+          min="0.05"
           max="180"
-          value={minutes}
+          placeholder="25"
+          value={minutesText}
           disabled={pomodoro.running || pending}
-          onChange={(event) => setMinutes(Number(event.target.value))}
+          onChange={(event) => setMinutesText(event.target.value)}
         />
       </label>
       <div className="panel__actions">
@@ -99,7 +110,12 @@ export function PomodoroPanel(): React.JSX.Element {
             Stop
           </button>
         ) : (
-          <button type="button" className="button" disabled={pending} onClick={handleStart}>
+          <button
+            type="button"
+            className="button"
+            disabled={pending || !minutesValid}
+            onClick={handleStart}
+          >
             Start focus
           </button>
         )}
