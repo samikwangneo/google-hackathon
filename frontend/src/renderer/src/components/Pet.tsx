@@ -1,17 +1,58 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 
+import annoyedSrc from '../assets/pet/Annoyed.png'
+import annoyedOnPhoneSrc from '../assets/pet/Annoyed on phone.png'
+import badAppleSrc from '../assets/pet/Bad apple.png'
+import chillSrc from '../assets/pet/Chill.png'
+import focusStudyingSrc from '../assets/pet/Focus-Studying.png'
+import gameboySrc from '../assets/pet/Gameboy.png'
+import goodAppleSrc from '../assets/pet/Good apple.png'
+import jengaSrc from '../assets/pet/Jenga.png'
 import levelUpSrc from '../assets/pet/levelup.png'
+import sleepySrc from '../assets/pet/Sleepy.png'
+import stressFocusSrc from '../assets/pet/Stress focus.png'
+import walkingSrc from '../assets/pet/Walking.png'
 import { useTerpPetStore } from '../store'
+import type { PetMood } from '../types/contracts'
 import { TerpPetSprite, type SpriteSheetConfig } from './TerpPetSprite'
 
-const levelUpSheet: SpriteSheetConfig = {
-  src: levelUpSrc,
-  frameWidth: 704,
-  frameHeight: 704,
-  frames: 8,
-  frameDurationMs: 135
+type PetSpriteConfig = SpriteSheetConfig & {
+  title: string
 }
+
+function createPetSheet(src: string, title: string, frameDurationMs = 135): PetSpriteConfig {
+  return {
+    src,
+    frameWidth: 704,
+    frameHeight: 704,
+    frames: 8,
+    frameDurationMs,
+    title
+  }
+}
+
+const PET_SPRITES: Record<PetMood, PetSpriteConfig> = {
+  HAPPY: createPetSheet(chillSrc, 'TerpPet happy chill animation'),
+  NEUTRAL: createPetSheet(chillSrc, 'TerpPet chill animation'),
+  ANNOYED: createPetSheet(annoyedSrc, 'TerpPet annoyed animation'),
+  SLEEPY: createPetSheet(sleepySrc, 'TerpPet sleepy animation', 150),
+  FOCUS_MODE: createPetSheet(focusStudyingSrc, 'TerpPet focus studying animation'),
+  EVOLVED: createPetSheet(levelUpSrc, 'TerpPet level up animation'),
+  GOOD_APPLE: createPetSheet(goodAppleSrc, 'TerpPet good apple animation'),
+  BAD_APPLE: createPetSheet(badAppleSrc, 'TerpPet bad apple animation'),
+  JENGA: createPetSheet(jengaSrc, 'TerpPet Jenga animation'),
+  GAMEBOY: createPetSheet(gameboySrc, 'TerpPet Game Boy animation'),
+  GENTLE_BREATHING: createPetSheet(chillSrc, 'TerpPet gentle breathing animation', 160),
+  ANNOYED_FOOT_TAPPING: createPetSheet(annoyedSrc, 'TerpPet foot tapping animation', 105),
+  ANNOYED_DOOM_SCROLLING: createPetSheet(
+    annoyedOnPhoneSrc,
+    'TerpPet doom scrolling animation'
+  ),
+  EXAM_PANIC_MODE: createPetSheet(stressFocusSrc, 'TerpPet exam panic animation', 95)
+}
+
+const WALKING_SPRITE = createPetSheet(walkingSrc, 'TerpPet walking animation', 115)
 
 const PET_RIGHT_OFFSET_PX = 28 + 128
 const LEFT_MARGIN_PX = 24
@@ -35,7 +76,9 @@ const OFF_SCREEN_BUFFER_PX = 260
 
 export function Pet(): React.JSX.Element {
   const mood = useTerpPetStore((state) => state.pet_mood)
+  const phonePresent = useTerpPetStore((state) => state.phone_present)
   const toggleMenu = useTerpPetStore((state) => state.toggleMenu)
+  const [isWalking, setIsWalking] = useState(false)
 
   const [walkDistance, setWalkDistance] = useState(() =>
     typeof window === 'undefined'
@@ -51,7 +94,11 @@ export function Pet(): React.JSX.Element {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  const isAnnoyed = mood === 'ANNOYED'
+  const isAnnoyed =
+    mood === 'ANNOYED' ||
+    mood === 'ANNOYED_FOOT_TAPPING' ||
+    mood === 'ANNOYED_DOOM_SCROLLING' ||
+    mood === 'EXAM_PANIC_MODE'
   const isSleepy = mood === 'SLEEPY'
 
   const walkOffSeconds = OFF_SCREEN_BUFFER_PX / WALK_SPEED_PX_PER_S
@@ -62,6 +109,26 @@ export function Pet(): React.JSX.Element {
   const tEnterLeftEnd = (CHILL_DURATION_S + 2 * walkOffSeconds) / totalCycleSeconds
   const tLeftChillEnd = (2 * CHILL_DURATION_S + 2 * walkOffSeconds) / totalCycleSeconds
   const tWalkOffLeftEnd = (2 * CHILL_DURATION_S + 3 * walkOffSeconds) / totalCycleSeconds
+
+  useEffect(() => {
+    const cycleStartedAt = window.performance.now()
+    const updateWalkingState = (): void => {
+      const elapsedSeconds = (window.performance.now() - cycleStartedAt) / 1000
+      const phase = (elapsedSeconds % totalCycleSeconds) / totalCycleSeconds
+      const currentlyWalking =
+        (phase >= tRightChillEnd && phase < tEnterLeftEnd) || phase >= tLeftChillEnd
+
+      setIsWalking((wasWalking) => (wasWalking === currentlyWalking ? wasWalking : currentlyWalking))
+    }
+
+    updateWalkingState()
+    const intervalId = window.setInterval(updateWalkingState, 100)
+    return () => window.clearInterval(intervalId)
+  }, [tEnterLeftEnd, tLeftChillEnd, tRightChillEnd, totalCycleSeconds])
+
+  const moodSprite =
+    phonePresent && isAnnoyed ? PET_SPRITES.ANNOYED_DOOM_SCROLLING : PET_SPRITES[mood]
+  const sprite = isWalking ? WALKING_SPRITE : moodSprite
 
   return (
     <motion.button
@@ -124,11 +191,11 @@ export function Pet(): React.JSX.Element {
       }}
     >
       <TerpPetSprite
-        sheet={levelUpSheet}
+        sheet={sprite}
         loop
         autoPlay
         className="pet__sprite"
-        title="TerpPet level up animation"
+        title={sprite.title}
       />
     </motion.button>
   )

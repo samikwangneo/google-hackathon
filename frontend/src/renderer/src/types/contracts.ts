@@ -2,7 +2,21 @@ export type BehaviorState = 'FOCUSED' | 'DISTRACTED' | 'IDLE' | 'MULTITASKING' |
 
 export type PresenceState = 'PRESENT' | 'ABSENT' | 'LOOKING_AWAY'
 
-export type PetMood = 'HAPPY' | 'NEUTRAL' | 'ANNOYED' | 'SLEEPY' | 'FOCUS_MODE' | 'EVOLVED'
+export type PetMood =
+  | 'HAPPY'
+  | 'NEUTRAL'
+  | 'ANNOYED'
+  | 'SLEEPY'
+  | 'FOCUS_MODE'
+  | 'EVOLVED'
+  | 'GOOD_APPLE'
+  | 'BAD_APPLE'
+  | 'JENGA'
+  | 'GAMEBOY'
+  | 'GENTLE_BREATHING'
+  | 'ANNOYED_FOOT_TAPPING'
+  | 'ANNOYED_DOOM_SCROLLING'
+  | 'EXAM_PANIC_MODE'
 
 export interface PomodoroState {
   running: boolean
@@ -20,6 +34,7 @@ export interface BehaviorUpdate {
   xp: number
   level: number
   pomodoro: PomodoroState
+  phone_present: boolean
 }
 
 export interface PomodoroCompletedEvent {
@@ -32,7 +47,15 @@ export interface LevelUpEvent {
   level: number
 }
 
-export type BehaviorSocketFrame = BehaviorUpdate | PomodoroCompletedEvent | LevelUpEvent
+export interface PomodoroFailedEvent {
+  type: 'pomodoro_failed'
+}
+
+export type BehaviorSocketFrame =
+  | BehaviorUpdate
+  | PomodoroCompletedEvent
+  | LevelUpEvent
+  | PomodoroFailedEvent
 
 export interface PomodoroStartRequest {
   minutes: number

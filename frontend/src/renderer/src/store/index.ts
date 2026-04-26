@@ -44,7 +44,8 @@ const initialBehavior: BehaviorUpdate = {
   distraction_streak: 0,
   xp: 0,
   level: 1,
-  pomodoro: initialPomodoro
+  pomodoro: initialPomodoro,
+  phone_present: false
 }
 
 function isSpecialEvent(
@@ -76,6 +77,13 @@ export const useTerpPetStore = create<TerpPetState>((set) => ({
           level: frame.level,
           pet_mood: 'EVOLVED' as PetMood,
           showEvolution: true,
+          lastFrameAt: Date.now()
+        }
+      }
+
+      if (frame.type === 'pomodoro_failed') {
+        return {
+          pet_mood: 'BAD_APPLE' as PetMood,
           lastFrameAt: Date.now()
         }
       }
