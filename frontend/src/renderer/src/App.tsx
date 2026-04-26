@@ -12,7 +12,6 @@ import { useTerpPetStore } from './store'
 function App(): React.JSX.Element {
   const activePanel = useTerpPetStore((state) => state.activePanel)
   const closePanel = useTerpPetStore((state) => state.closePanel)
-  const connectionStatus = useTerpPetStore((state) => state.connectionStatus)
   const applyFrame = useTerpPetStore((state) => state.applyFrame)
   const setConnectionStatus = useTerpPetStore((state) => state.setConnectionStatus)
 
@@ -56,11 +55,6 @@ function App(): React.JSX.Element {
 
   return (
     <main className="app-shell">
-      <div className={`connection-pill connection-pill--${connectionStatus}`}>
-        <span />
-        {connectionStatus === 'open' ? 'Backend live' : 'Demo mode'}
-      </div>
-
       <AnimatePresence mode="wait">
         {activePanel && (
           <motion.div

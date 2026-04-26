@@ -5,15 +5,6 @@ import levelUpSrc from '../assets/pet/levelup.png'
 import { useTerpPetStore } from '../store'
 import { TerpPetSprite, type SpriteSheetConfig } from './TerpPetSprite'
 
-const moodCopy = {
-  HAPPY: 'Locked in',
-  NEUTRAL: 'Ready',
-  ANNOYED: 'Back to work',
-  SLEEPY: 'Where did you go?',
-  FOCUS_MODE: 'Focus mode',
-  EVOLVED: 'Level up!'
-} as const
-
 const levelUpSheet: SpriteSheetConfig = {
   src: levelUpSrc,
   frameWidth: 704,
@@ -22,42 +13,35 @@ const levelUpSheet: SpriteSheetConfig = {
   frameDurationMs: 135
 }
 
-type Phase = 'walking' | 'chilling'
-
-const WALK_DURATION_S = 32
-const PHASE_DURATION_MS: Record<Phase, number> = {
-  walking: WALK_DURATION_S * 1000,
-  chilling: 9000
-}
-
-// Flip the same sprite at the two direction-change moments without swapping
-// animation sheets. This preserves the level-up test animation while walking.
-const SCALEX_KEYFRAMES = [1, -1, -1, 1, 1]
-const SCALEX_TIMES = [0, 0.001, 0.499, 0.501, 1]
-
 const PET_RIGHT_OFFSET_PX = 28 + 128
 const LEFT_MARGIN_PX = 24
 
+// Symmetric ping-pong cycle (single looping keyframe animation):
+//   1. chill at right anchor (CHILL_DURATION_S)
+//   2. visible flip to face right, walk rightward off the right edge
+//   3. instant off-screen wrap from off-right to off-left
+//   4. continue walking rightward into view, stop at left anchor
+//   5. chill at left anchor (CHILL_DURATION_S)
+//   6. visible flip to face left, walk leftward off the left edge
+//   7. instant off-screen wrap from off-left to off-right
+//   8. continue walking leftward into view, stop at right anchor (loop wrap)
+// The wraps stay instant but happen entirely off-screen, so the user sees a
+// continuous walk that "comes back in" from the opposite edge instead of the
+// pet popping in. Linear ease + proportional `times` keep walking speed
+// constant across all four walking segments.
+const CHILL_DURATION_S = 5
+const WALK_SPEED_PX_PER_S = 180
+const OFF_SCREEN_BUFFER_PX = 260
+
 export function Pet(): React.JSX.Element {
   const mood = useTerpPetStore((state) => state.pet_mood)
-  const behavior = useTerpPetStore((state) => state.state)
-  const presence = useTerpPetStore((state) => state.presence)
   const toggleMenu = useTerpPetStore((state) => state.toggleMenu)
 
-  const [phase, setPhase] = useState<Phase>('chilling')
   const [walkDistance, setWalkDistance] = useState(() =>
     typeof window === 'undefined'
       ? 260
       : Math.max(160, window.innerWidth - PET_RIGHT_OFFSET_PX - LEFT_MARGIN_PX)
   )
-
-  useEffect(() => {
-    const timer = window.setTimeout(
-      () => setPhase((prev) => (prev === 'walking' ? 'chilling' : 'walking')),
-      PHASE_DURATION_MS[phase]
-    )
-    return () => window.clearTimeout(timer)
-  }, [phase])
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -69,7 +53,15 @@ export function Pet(): React.JSX.Element {
 
   const isAnnoyed = mood === 'ANNOYED'
   const isSleepy = mood === 'SLEEPY'
-  const isWalking = phase === 'walking'
+
+  const walkOffSeconds = OFF_SCREEN_BUFFER_PX / WALK_SPEED_PX_PER_S
+  const totalCycleSeconds = 2 * CHILL_DURATION_S + 4 * walkOffSeconds
+  // Cycle phase boundaries (normalized 0..1)
+  const tRightChillEnd = CHILL_DURATION_S / totalCycleSeconds
+  const tWalkOffRightEnd = (CHILL_DURATION_S + walkOffSeconds) / totalCycleSeconds
+  const tEnterLeftEnd = (CHILL_DURATION_S + 2 * walkOffSeconds) / totalCycleSeconds
+  const tLeftChillEnd = (2 * CHILL_DURATION_S + 2 * walkOffSeconds) / totalCycleSeconds
+  const tWalkOffLeftEnd = (2 * CHILL_DURATION_S + 3 * walkOffSeconds) / totalCycleSeconds
 
   return (
     <motion.button
@@ -77,24 +69,60 @@ export function Pet(): React.JSX.Element {
       className={`pet pet--${mood.toLowerCase()}`}
       aria-label="Open TerpPet actions"
       onClick={toggleMenu}
+      initial={{ x: 0, scaleX: -1 }}
       animate={{
-        x: isWalking ? [0, -walkDistance * 0.5, -walkDistance, -walkDistance * 0.5, 0] : 0,
-        y: isWalking ? [0, -3, 0, -3, 0] : isSleepy ? [0, 7, 0] : [0, -6, 0],
+        x: [
+          0,
+          0,
+          OFF_SCREEN_BUFFER_PX,
+          -(walkDistance + OFF_SCREEN_BUFFER_PX),
+          -walkDistance,
+          -walkDistance,
+          -(walkDistance + OFF_SCREEN_BUFFER_PX),
+          OFF_SCREEN_BUFFER_PX,
+          0
+        ],
+        scaleX: [-1, -1, 1, 1, -1, -1],
+        y: isSleepy ? [0, 7, 0] : [0, -6, 0],
         rotate: isAnnoyed ? [0, -6, 6, -4, 4, 0] : 0,
-        scaleX: isWalking ? SCALEX_KEYFRAMES : 1,
         scale: mood === 'EVOLVED' ? [1, 1.12, 1] : 1
       }}
       transition={{
-        duration: isWalking ? WALK_DURATION_S : isAnnoyed ? 0.45 : 2.8,
-        repeat: isAnnoyed ? Infinity : isWalking ? 0 : Infinity,
-        repeatDelay: isAnnoyed ? 1.5 : 0,
-        ease: isWalking ? 'linear' : 'easeInOut',
-        scaleX: isWalking
-          ? { duration: WALK_DURATION_S, ease: 'linear', times: SCALEX_TIMES }
+        default: { duration: 2.8, repeat: Infinity, ease: 'easeInOut' },
+        x: {
+          duration: totalCycleSeconds,
+          times: [
+            0,
+            tRightChillEnd,
+            tWalkOffRightEnd,
+            tWalkOffRightEnd + 0.0001,
+            tEnterLeftEnd,
+            tLeftChillEnd,
+            tWalkOffLeftEnd,
+            tWalkOffLeftEnd + 0.0001,
+            1
+          ],
+          repeat: Infinity,
+          ease: 'linear'
+        },
+        scaleX: {
+          duration: totalCycleSeconds,
+          times: [
+            0,
+            tRightChillEnd - 0.0001,
+            tRightChillEnd,
+            tLeftChillEnd - 0.0001,
+            tLeftChillEnd,
+            1
+          ],
+          repeat: Infinity,
+          ease: 'linear'
+        },
+        rotate: isAnnoyed
+          ? { duration: 0.45, repeat: Infinity, repeatDelay: 1.5, ease: 'easeInOut' }
           : { duration: 0 }
       }}
     >
-      <span className="pet__orb" aria-hidden="true" />
       <TerpPetSprite
         sheet={levelUpSheet}
         loop
@@ -102,12 +130,6 @@ export function Pet(): React.JSX.Element {
         className="pet__sprite"
         title="TerpPet level up animation"
       />
-      <span className="pet__status">
-        <strong>{moodCopy[mood]}</strong>
-        <small>
-          {behavior.toLowerCase().replace('_', ' ')} / {presence.toLowerCase().replace('_', ' ')}
-        </small>
-      </span>
     </motion.button>
   )
 }
