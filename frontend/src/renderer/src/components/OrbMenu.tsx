@@ -9,21 +9,26 @@ const items: Array<{
   glyph: string
   angle: number
 }> = [
-  { id: 'pomodoro', label: 'Pomodoro', glyph: '25', angle: -132 },
-  { id: 'study-plan', label: 'Study Plan', glyph: 'SP', angle: -92 },
-  { id: 'brain', label: 'Brain', glyph: 'BR', angle: -52 },
-  { id: 'stats', label: 'Stats', glyph: 'XP', angle: -12 }
+  { id: 'pomodoro', label: 'Pomodoro', glyph: '25', angle: -175 },
+  { id: 'study-plan', label: 'Assignments', glyph: 'Due', angle: -140 },
+  { id: 'brain', label: 'Brain', glyph: 'BR', angle: -105 },
+  { id: 'stats', label: 'Stats', glyph: 'XP', angle: -75 }
 ]
 
 export function OrbMenu(): React.JSX.Element {
   const isOpen = useTerpPetStore((state) => state.menuOpen)
+  const petSide = useTerpPetStore((state) => state.petSide)
   const setActivePanel = useTerpPetStore((state) => state.setActivePanel)
+
+  const positionStyle =
+    petSide === 'left' ? { left: 82, right: 'auto' as const } : { right: 82, left: 'auto' as const }
 
   return (
     <AnimatePresence>
       {isOpen && (
         <motion.div
           className="orb-menu"
+          style={positionStyle}
           initial={{ opacity: 0, scale: 0.72 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.72 }}
@@ -31,7 +36,10 @@ export function OrbMenu(): React.JSX.Element {
         >
           {items.map((item, index) => {
             const radius = 132
-            const radians = (item.angle * Math.PI) / 180
+            // Mirror across the vertical axis when the pet is on the left so the
+            // arc fans into the screen instead of off the left edge.
+            const angle = petSide === 'left' ? 180 - item.angle : item.angle
+            const radians = (angle * Math.PI) / 180
             const x = Math.cos(radians) * radius
             const y = Math.sin(radians) * radius
 

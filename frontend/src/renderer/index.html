@@ -4,9 +4,17 @@
     <meta charset="UTF-8" />
     <title>Electron</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <!--
+      connect-src must explicitly allow the backend. Per CSP3, a host-source
+      with no port only matches the scheme's default port (80 for ws/http),
+      so `ws://127.0.0.1` does NOT cover `ws://127.0.0.1:8765` — we need `:*`
+      (or the literal port). Without this, Chromium blocks the WebSocket and
+      sometimes never fires a `close` event, leaving the renderer stuck on
+      "connecting".
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8765 ws://127.0.0.1:8765 http://localhost:8765 ws://localhost:8765"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*"
     />
   </head>
 

@@ -35,14 +35,21 @@ LEVEL_THRESHOLDS: list[int] = [0, 100, 250, 500, 1000, 2000, 4000]
 # How long GOOD_APPLE / BAD_APPLE moods stick after their triggering event.
 APPLE_DURATION_S: float = 10.0
 
+# Max time the pet stays in the WALKING neutral substate before auto-advancing
+# to the next entry in the neutral cycle. Other neutral substates hold until
+# the mood category changes.
+WALKING_DURATION_S: float = 15.0
+
 # A pomodoro fails when its base mood stays ANNOYED for this long.
 POMO_FAIL_ANNOYED_THRESHOLD_S: float = 60.0
 
 # Sub-state cycles. Cycled in declared order on every category re-entry.
+# WALKING is the 4th slot, so roughly 1 in 4 neutral sessions show the walk.
 _NEUTRAL_CYCLE: tuple[PetMood, ...] = (
     PetMood.JENGA,
     PetMood.GAMEBOY,
     PetMood.GENTLE_BREATHING,
+    PetMood.WALKING,
 )
 _ANNOYED_CYCLE: tuple[PetMood, ...] = (
     PetMood.ANNOYED_FOOT_TAPPING,
@@ -77,6 +84,10 @@ _bad_apple_until: Optional[float] = None
 # Cumulative annoyed time during the current pomodoro (monotonic seconds).
 # Only ticks while a pomodoro is running and base category == "ANNOYED".
 _annoyed_streak_started_at: Optional[float] = None
+
+# When the current WALKING neutral substate began (monotonic seconds). None
+# whenever the active substate isn't WALKING.
+_walking_started_at: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +159,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
     global _xp, _level, _focus_seconds, _pomodoros_completed, _just_evolved
     global _neutral_idx, _annoyed_idx, _last_mood_category
     global _good_apple_until, _bad_apple_until, _annoyed_streak_started_at
+    global _walking_started_at
 
     now_monotonic = time.monotonic()
 
@@ -231,6 +243,18 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
             elif category == "ANNOYED":
                 _annoyed_idx = (_annoyed_idx + 1) % len(_ANNOYED_CYCLE)
             _last_mood_category = category
+
+        # Cap the WALKING neutral substate so the pet doesn't walk indefinitely
+        # when the user lingers in NEUTRAL. After the cap fires we auto-advance
+        # to the next entry in the neutral cycle.
+        if category == "NEUTRAL" and _NEUTRAL_CYCLE[_neutral_idx] == PetMood.WALKING:
+            if _walking_started_at is None:
+                _walking_started_at = now_monotonic
+            elif now_monotonic - _walking_started_at >= WALKING_DURATION_S:
+                _neutral_idx = (_neutral_idx + 1) % len(_NEUTRAL_CYCLE)
+                _walking_started_at = None
+        else:
+            _walking_started_at = None
 
         # Resolve final mood (apple windows + sub-state rotation).
         mood = _resolve_mood(category, now_monotonic)

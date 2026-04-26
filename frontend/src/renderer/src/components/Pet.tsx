@@ -21,7 +21,7 @@ type PetSpriteConfig = SpriteSheetConfig & {
   title: string
 }
 
-function createPetSheet(src: string, title: string, frameDurationMs = 135): PetSpriteConfig {
+function createPetSheet(src: string, title: string, frameDurationMs = 250): PetSpriteConfig {
   return {
     src,
     frameWidth: 704,
@@ -36,23 +36,24 @@ const PET_SPRITES: Record<PetMood, PetSpriteConfig> = {
   HAPPY: createPetSheet(chillSrc, 'TerpPet happy chill animation'),
   NEUTRAL: createPetSheet(chillSrc, 'TerpPet chill animation'),
   ANNOYED: createPetSheet(annoyedSrc, 'TerpPet annoyed animation'),
-  SLEEPY: createPetSheet(sleepySrc, 'TerpPet sleepy animation', 150),
+  SLEEPY: createPetSheet(sleepySrc, 'TerpPet sleepy animation', 265),
   FOCUS_MODE: createPetSheet(focusStudyingSrc, 'TerpPet focus studying animation'),
   EVOLVED: createPetSheet(levelUpSrc, 'TerpPet level up animation'),
   GOOD_APPLE: createPetSheet(goodAppleSrc, 'TerpPet good apple animation'),
   BAD_APPLE: createPetSheet(badAppleSrc, 'TerpPet bad apple animation'),
   JENGA: createPetSheet(jengaSrc, 'TerpPet Jenga animation'),
   GAMEBOY: createPetSheet(gameboySrc, 'TerpPet Game Boy animation'),
-  GENTLE_BREATHING: createPetSheet(chillSrc, 'TerpPet gentle breathing animation', 160),
-  ANNOYED_FOOT_TAPPING: createPetSheet(annoyedSrc, 'TerpPet foot tapping animation', 105),
+  GENTLE_BREATHING: createPetSheet(chillSrc, 'TerpPet gentle breathing animation', 275),
+  ANNOYED_FOOT_TAPPING: createPetSheet(annoyedSrc, 'TerpPet foot tapping animation', 220),
   ANNOYED_DOOM_SCROLLING: createPetSheet(
     annoyedOnPhoneSrc,
     'TerpPet doom scrolling animation'
   ),
-  EXAM_PANIC_MODE: createPetSheet(stressFocusSrc, 'TerpPet exam panic animation', 95)
+  EXAM_PANIC_MODE: createPetSheet(stressFocusSrc, 'TerpPet exam panic animation', 210),
+  WALKING: createPetSheet(walkingSrc, 'TerpPet walking animation', 230)
 }
 
-const WALKING_SPRITE = createPetSheet(walkingSrc, 'TerpPet walking animation', 115)
+const WALKING_SPRITE = createPetSheet(walkingSrc, 'TerpPet walking animation', 230)
 
 const PET_RIGHT_OFFSET_PX = 28 + 128
 const LEFT_MARGIN_PX = 24
@@ -78,6 +79,9 @@ export function Pet(): React.JSX.Element {
   const mood = useTerpPetStore((state) => state.pet_mood)
   const phonePresent = useTerpPetStore((state) => state.phone_present)
   const toggleMenu = useTerpPetStore((state) => state.toggleMenu)
+  const setPetSide = useTerpPetStore((state) => state.setPetSide)
+  const menuOpen = useTerpPetStore((state) => state.menuOpen)
+  const petSide = useTerpPetStore((state) => state.petSide)
   const [isWalking, setIsWalking] = useState(false)
 
   const [walkDistance, setWalkDistance] = useState(() =>
@@ -100,6 +104,7 @@ export function Pet(): React.JSX.Element {
     mood === 'ANNOYED_DOOM_SCROLLING' ||
     mood === 'EXAM_PANIC_MODE'
   const isSleepy = mood === 'SLEEPY'
+  const walkingMood = mood === 'WALKING'
 
   const walkOffSeconds = OFF_SCREEN_BUFFER_PX / WALK_SPEED_PX_PER_S
   const totalCycleSeconds = 2 * CHILL_DURATION_S + 4 * walkOffSeconds
@@ -111,20 +116,43 @@ export function Pet(): React.JSX.Element {
   const tWalkOffLeftEnd = (2 * CHILL_DURATION_S + 3 * walkOffSeconds) / totalCycleSeconds
 
   useEffect(() => {
+    if (menuOpen || !walkingMood) {
+      // Freeze the cycle while the orb menu is open or the pet isn't in
+      // WALKING mood, so the pet stays parked at its anchor.
+      setIsWalking(false)
+      if (!walkingMood) {
+        setPetSide('right')
+      }
+      return
+    }
+
     const cycleStartedAt = window.performance.now()
-    const updateWalkingState = (): void => {
+    const updateCycleState = (): void => {
       const elapsedSeconds = (window.performance.now() - cycleStartedAt) / 1000
       const phase = (elapsedSeconds % totalCycleSeconds) / totalCycleSeconds
       const currentlyWalking =
         (phase >= tRightChillEnd && phase < tEnterLeftEnd) || phase >= tLeftChillEnd
+      const currentSide: 'left' | 'right' =
+        phase >= tWalkOffRightEnd && phase < tWalkOffLeftEnd ? 'left' : 'right'
 
       setIsWalking((wasWalking) => (wasWalking === currentlyWalking ? wasWalking : currentlyWalking))
+      setPetSide(currentSide)
     }
 
-    updateWalkingState()
-    const intervalId = window.setInterval(updateWalkingState, 100)
+    updateCycleState()
+    const intervalId = window.setInterval(updateCycleState, 100)
     return () => window.clearInterval(intervalId)
-  }, [tEnterLeftEnd, tLeftChillEnd, tRightChillEnd, totalCycleSeconds])
+  }, [
+    menuOpen,
+    walkingMood,
+    setPetSide,
+    tEnterLeftEnd,
+    tLeftChillEnd,
+    tRightChillEnd,
+    tWalkOffLeftEnd,
+    tWalkOffRightEnd,
+    totalCycleSeconds
+  ])
 
   const moodSprite =
     phonePresent && isAnnoyed ? PET_SPRITES.ANNOYED_DOOM_SCROLLING : PET_SPRITES[mood]
@@ -138,53 +166,73 @@ export function Pet(): React.JSX.Element {
       onClick={toggleMenu}
       initial={{ x: 0, scaleX: -1 }}
       animate={{
-        x: [
-          0,
-          0,
-          OFF_SCREEN_BUFFER_PX,
-          -(walkDistance + OFF_SCREEN_BUFFER_PX),
-          -walkDistance,
-          -walkDistance,
-          -(walkDistance + OFF_SCREEN_BUFFER_PX),
-          OFF_SCREEN_BUFFER_PX,
-          0
-        ],
-        scaleX: [-1, -1, 1, 1, -1, -1],
+        x: menuOpen
+          ? petSide === 'left'
+            ? -walkDistance
+            : 0
+          : walkingMood
+            ? [
+                0,
+                0,
+                OFF_SCREEN_BUFFER_PX,
+                -(walkDistance + OFF_SCREEN_BUFFER_PX),
+                -walkDistance,
+                -walkDistance,
+                -(walkDistance + OFF_SCREEN_BUFFER_PX),
+                OFF_SCREEN_BUFFER_PX,
+                0
+              ]
+            : 0,
+        scaleX: menuOpen
+          ? petSide === 'left'
+            ? 1
+            : -1
+          : walkingMood
+            ? [-1, -1, 1, 1, -1, -1]
+            : -1,
         y: isSleepy ? [0, 7, 0] : [0, -6, 0],
         rotate: isAnnoyed ? [0, -6, 6, -4, 4, 0] : 0,
         scale: mood === 'EVOLVED' ? [1, 1.12, 1] : 1
       }}
       transition={{
         default: { duration: 2.8, repeat: Infinity, ease: 'easeInOut' },
-        x: {
-          duration: totalCycleSeconds,
-          times: [
-            0,
-            tRightChillEnd,
-            tWalkOffRightEnd,
-            tWalkOffRightEnd + 0.0001,
-            tEnterLeftEnd,
-            tLeftChillEnd,
-            tWalkOffLeftEnd,
-            tWalkOffLeftEnd + 0.0001,
-            1
-          ],
-          repeat: Infinity,
-          ease: 'linear'
-        },
-        scaleX: {
-          duration: totalCycleSeconds,
-          times: [
-            0,
-            tRightChillEnd - 0.0001,
-            tRightChillEnd,
-            tLeftChillEnd - 0.0001,
-            tLeftChillEnd,
-            1
-          ],
-          repeat: Infinity,
-          ease: 'linear'
-        },
+        x: menuOpen
+          ? { duration: 0.4, ease: 'easeOut' }
+          : walkingMood
+            ? {
+                duration: totalCycleSeconds,
+                times: [
+                  0,
+                  tRightChillEnd,
+                  tWalkOffRightEnd,
+                  tWalkOffRightEnd + 0.0001,
+                  tEnterLeftEnd,
+                  tLeftChillEnd,
+                  tWalkOffLeftEnd,
+                  tWalkOffLeftEnd + 0.0001,
+                  1
+                ],
+                repeat: Infinity,
+                ease: 'linear'
+              }
+            : { duration: 0.6, ease: 'easeOut' },
+        scaleX: menuOpen
+          ? { duration: 0.4, ease: 'easeOut' }
+          : walkingMood
+            ? {
+                duration: totalCycleSeconds,
+                times: [
+                  0,
+                  tRightChillEnd - 0.0001,
+                  tRightChillEnd,
+                  tLeftChillEnd - 0.0001,
+                  tLeftChillEnd,
+                  1
+                ],
+                repeat: Infinity,
+                ease: 'linear'
+              }
+            : { duration: 0.4, ease: 'easeOut' },
         rotate: isAnnoyed
           ? { duration: 0.45, repeat: Infinity, repeatDelay: 1.5, ease: 'easeInOut' }
           : { duration: 0 }

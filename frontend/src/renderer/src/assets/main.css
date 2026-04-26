@@ -488,6 +488,103 @@ button {
   font-size: 12px;
 }
 
+.assignments-panel {
+  padding-right: 18px;
+}
+
+.assignments-panel h2 {
+  margin-bottom: 16px;
+}
+
+.assignments-panel__list {
+  display: grid;
+  gap: 10px;
+}
+
+.assignment-card {
+  display: grid;
+  grid-template-columns: 48px 1fr 34px;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 10px 11px 0;
+  border-top: 1px solid rgba(255, 245, 214, 0.16);
+}
+
+.assignment-card:first-child {
+  border-top: 0;
+}
+
+.assignment-card__date {
+  display: grid;
+  justify-items: center;
+  color: rgba(255, 245, 214, 0.66);
+  line-height: 1;
+}
+
+.assignment-card__date span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.assignment-card__date strong {
+  margin-top: 5px;
+  color: rgba(255, 245, 214, 0.9);
+  font-size: 25px;
+  font-weight: 1000;
+}
+
+.assignment-card__body {
+  min-width: 0;
+}
+
+.assignment-card__course {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #72d9ff;
+  font-size: 13px;
+  font-weight: 1000;
+  letter-spacing: 0.03em;
+}
+
+.assignment-card__course span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid rgba(114, 217, 255, 0.54);
+  border-radius: 6px;
+  color: rgba(255, 245, 214, 0.92);
+  font-size: 10px;
+}
+
+.assignment-card h3 {
+  overflow: hidden;
+  margin: 4px 0 3px;
+  color: #fff9e8;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignment-card time {
+  color: rgba(255, 245, 214, 0.64);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.assignment-card__check {
+  width: 28px;
+  height: 28px;
+  border: 2px solid rgba(255, 73, 92, 0.8);
+  border-radius: 8px;
+  background: rgba(255, 245, 214, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 245, 214, 0.08);
+  cursor: pointer;
+}
+
 .stats-panel__xp {
   display: flex;
   justify-content: space-between;

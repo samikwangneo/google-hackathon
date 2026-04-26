@@ -12,6 +12,7 @@ remember the uvicorn module path or port.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 from typing import Sequence
@@ -23,6 +24,33 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+
+
+def _configure_app_logging(level_name: str) -> None:
+    """Ensure terppet.* loggers actually print.
+
+    Uvicorn only attaches handlers to its own `uvicorn.*` loggers; without this
+    every `log.info(...)` from app code is silently dropped by Python's
+    lastResort handler (WARNING+ only).
+    """
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    app_logger = logging.getLogger("terppet")
+    app_logger.setLevel(level)
+    # Avoid double-handlers if run.py is reloaded in --reload mode.
+    if not any(isinstance(h, logging.StreamHandler) for h in app_logger.handlers):
+        app_logger.addHandler(handler)
+    app_logger.propagate = False
+    # Also surface vision/activity module loggers (they use __name__).
+    for extra in ("app.vision", "app.activity", "app.state", "app.main"):
+        lg = logging.getLogger(extra)
+        lg.setLevel(level)
+        if not any(isinstance(h, logging.StreamHandler) for h in lg.handlers):
+            lg.addHandler(handler)
+        lg.propagate = False
 
 
 def _load_env() -> None:
@@ -81,10 +109,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_runtime_env(args)
+    _configure_app_logging(args.log_level)
 
     print(f"TerpPet backend: http://{args.host}:{args.port}")
-    print("Health check:     GET /api/health")
-    print("WebSocket:        /ws/state")
+    print(f"Health check:     GET http://{args.host}:{args.port}/api/health")
+    print(f"WebSocket:        ws://{args.host}:{args.port}/ws/state")
     if os.environ.get("TERPPET_SCREEN_AI") == "1":
         print(
             "Screen AI:        enabled "
