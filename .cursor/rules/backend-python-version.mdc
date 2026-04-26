@@ -1,0 +1,45 @@
+---
+description: TerpPet backend targets Python 3.12 — keep deps and code 3.12-compatible
+globs: backend/**
+alwaysApply: false
+---
+
+# TerpPet backend — Python 3.12 is the canonical interpreter
+
+The hackathon demo machine runs the backend on **Python 3.12** (chosen for
+reliable `mediapipe` wheel availability across platforms). Local dev machines
+may use 3.13, but **every change MUST stay 3.12-compatible**.
+
+## Hard rules
+
+1. **No 3.13-only syntax or stdlib APIs.** Avoid PEP 695 `type X = ...`
+   aliases, the new generic `class Foo[T]:` syntax, `copy.replace`,
+   `os.process_cpu_count`, `sys.last_exc`, `warnings.deprecated`, etc.
+   `from __future__ import annotations` + `typing.Optional/Tuple/List/Literal`
+   covers everything we need.
+2. **Every new dep in `backend/requirements.txt` must have a cp312 wheel** for
+   macOS arm64 (primary target). Verify before adding:
+   ```bash
+   pip download --python-version 3.12 --only-binary=:all: \
+     --platform macosx_11_0_arm64 --abi cp312 --implementation cp \
+     --no-deps -d /tmp/check <package>==<version>
+   ```
+   If only an sdist exists, the package must be pure-Python (no C extensions)
+   so it builds on any interpreter.
+3. **Pin exact versions** (`==`) for reproducibility across team machines.
+   Loose `>=` only for deps that are platform-specific and rarely break (e.g.
+   `pywin32` on win32-only).
+4. **Platform-specific deps use `sys_platform` markers**, never bare names:
+   - `pyobjc-framework-*` → `sys_platform == "darwin"`
+   - `pygetwindow` / `pywin32` → `sys_platform == "win32"` (pygetwindow is
+     Windows-only at runtime)
+
+## Known gotchas
+
+- `opencv-python` ships cp313-only wheels for `>=4.11`. Stay on `4.10.0.84`
+  until cp312 wheels resume.
+- `mediapipe>=0.10.30` only ships macOS arm64 + Windows wheels — no manylinux
+  cp312. Linux contributors must use the Haar-cascade fallback in
+  `backend/app/vision.py`.
+- `pygetwindow` raises `NotImplementedError` outside Windows. All callers
+  (e.g. `backend/app/activity.py`) must wrap it in `try/except`.
