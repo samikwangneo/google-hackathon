@@ -1,7 +1,7 @@
 """Gemini wrapper (Person D).
 
-Lazy-initialized google-genai client. If the lib isn't installed or
-GEMINI_API_KEY is missing / invalid, every public function falls back to
+Lazy-initialized google-genai client. Uses Application Default Credentials
+through Vertex AI. If auth is missing / invalid, every public function falls back to
 deterministic canned data so the server still boots and the demo loop
 keeps working.
 
@@ -34,7 +34,23 @@ load_dotenv(find_dotenv(usecwd=True))
 
 
 _DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+_USE_VERTEX_AI = (
+    os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+    or os.getenv("GEMINI_USE_ADC", "").strip().lower() in {"1", "true", "yes", "on"}
+    or os.getenv("TERPPET_USE_ADC", "").strip().lower() in {"1", "true", "yes", "on"}
+)
+_VERTEX_PROJECT = (
+    os.getenv("GOOGLE_CLOUD_PROJECT")
+    or os.getenv("GOOGLE_PROJECT_ID")
+    or os.getenv("GCLOUD_PROJECT")
+)
+_VERTEX_LOCATION = (
+    os.getenv("GOOGLE_CLOUD_LOCATION")
+    or os.getenv("GOOGLE_CLOUD_REGION")
+    or os.getenv("GEMINI_LOCATION")
+    or "us-central1"
+)
 
 _client: Optional[Any] = None
 
@@ -44,12 +60,16 @@ def _get_client() -> Optional[Any]:
     global _client
     if _client is not None:
         return _client
-    if not _API_KEY:
+    if not (_USE_VERTEX_AI and _VERTEX_PROJECT):
         return None
     try:
         from google import genai  # type: ignore
 
-        _client = genai.Client(api_key=_API_KEY)
+        _client = genai.Client(
+            vertexai=True,
+            project=_VERTEX_PROJECT,
+            location=_VERTEX_LOCATION,
+        )
         return _client
     except Exception as exc:  # pragma: no cover — runtime fallback
         log.warning("Gemini client init failed: %s", exc)
@@ -157,7 +177,7 @@ def _canned_summary_quiz(text: str) -> SummarizeResponse:
         quiz=[
             QuizQuestion(
                 question="What is the main idea of the passage?",
-                answer="Add GEMINI_API_KEY to .env to generate real quiz questions.",
+                answer="Configure ADC/Vertex AI in .env to generate real quiz questions.",
             ),
             QuizQuestion(
                 question="Name one supporting detail.",

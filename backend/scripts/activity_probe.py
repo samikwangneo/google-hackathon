@@ -35,7 +35,7 @@ STATE_BADGES: Dict[str, str] = {
 }
 
 
-def _short(value: Optional[str], width: int) -> str:
+def _short(value: Any, width: int) -> str:
     if not value:
         return "-".ljust(width)
     clean = " ".join(str(value).split())
@@ -123,13 +123,19 @@ def _format_row(snapshot: Any) -> str:
     badge = STATE_BADGES.get(snapshot.state, "????")
     ai_state = getattr(snapshot, "ai_screen_state", None)
     ai_reason = getattr(snapshot, "ai_screen_reason", None)
+    ai_confidence = getattr(snapshot, "ai_screen_confidence", None)
+    state_source = getattr(snapshot, "state_source", "rules")
     ai_part = ""
     if ai_state:
-        ai_part = f" ai={ai_state}:{_short(ai_reason, 24).strip()}"
+        confidence = ""
+        if isinstance(ai_confidence, (int, float)):
+            confidence = f"({ai_confidence:.2f})"
+        ai_part = f" ai={ai_state}{confidence}:{_short(ai_reason, 24).strip()}"
     return (
         f"{time.strftime('%H:%M:%S')} "
         f"{badge} "
         f"state={snapshot.state:<13} "
+        f"src={state_source:<9} "
         f"app={_short(snapshot.active_app, 18)} "
         f"title={_short(snapshot.active_window, 34)} "
         f"url={_short(snapshot.active_url, 18)} "
@@ -154,6 +160,7 @@ def run(
     debug_sensors: bool,
     screen_ai: bool,
     ai_interval: float,
+    heartbeat_seconds: float,
 ) -> int:
     activity.start_tracking(
         mock=False,
@@ -173,11 +180,13 @@ def run(
     )
 
     start = time.monotonic()
+    last_printed_at = 0.0
     last_signature: Optional[tuple[Any, ...]] = None
 
     try:
         while True:
             snapshot = activity.current_state()
+            status = activity.screen_ai_status() if screen_ai else {}
             signature = (
                 snapshot.state,
                 snapshot.active_app,
@@ -185,11 +194,36 @@ def run(
                 snapshot.active_url,
                 int(snapshot.seconds_since_input),
                 snapshot.window_switches_60s,
+                getattr(snapshot, "state_source", None),
+                getattr(snapshot, "ai_screen_state", None),
+                status.get("inflight"),
+                status.get("started_count"),
+                status.get("succeeded_count"),
+                status.get("failed_count"),
             )
-            if not only_changes or signature != last_signature:
+            now_monotonic = time.monotonic()
+            heartbeat_due = (
+                only_changes
+                and heartbeat_seconds > 0
+                and now_monotonic - last_printed_at >= heartbeat_seconds
+            )
+            if not only_changes or signature != last_signature or heartbeat_due:
                 print(_format_row(snapshot), flush=True)
+                if screen_ai:
+                    print(
+                        "    screen_ai "
+                        f"enabled={status.get('enabled')} "
+                        f"auth={status.get('auth_mode')} "
+                        f"inflight={status.get('inflight')} "
+                        f"calls={status.get('started_count')}/"
+                        f"{status.get('succeeded_count')}/"
+                        f"{status.get('failed_count')} "
+                        f"latest={status.get('latest_state')} "
+                        f"reason={_short(status.get('latest_reason'), 50).strip()} "
+                        f"err={_short(status.get('last_error'), 80).strip()}",
+                        flush=True,
+                    )
                 if debug_sensors:
-                    status = activity.screen_ai_status()
                     try:
                         app_name, title = activity._get_active_window()  # type: ignore[attr-defined]
                     except Exception as exc:  # pragma: no cover - diagnostic path
@@ -200,19 +234,10 @@ def run(
                             f"title={_short(title, 70)}",
                             flush=True,
                         )
-                    if screen_ai:
-                        print(
-                            "    screen_ai "
-                            f"enabled={status.get('enabled')} "
-                            f"inflight={status.get('inflight')} "
-                            f"latest={status.get('latest_state')} "
-                            f"reason={_short(status.get('latest_reason'), 50).strip()} "
-                            f"err={_short(status.get('last_error'), 60).strip()}",
-                            flush=True,
-                        )
                 last_signature = signature
+                last_printed_at = now_monotonic
 
-            if duration is not None and time.monotonic() - start >= duration:
+            if duration is not None and now_monotonic - start >= duration:
                 break
             time.sleep(interval)
     finally:
@@ -261,6 +286,12 @@ def main() -> int:
         default=10.0,
         help="Seconds between Gemini screenshot classifications (min 5, default 10).",
     )
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=5.0,
+        help="With --only-changes, still print status this often (0 disables).",
+    )
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, lambda _signum, _frame: raise_keyboard_interrupt())
@@ -292,6 +323,7 @@ def main() -> int:
             args.debug_sensors,
             args.screen_ai,
             args.ai_interval,
+            args.heartbeat_seconds,
         )
     except KeyboardInterrupt:
         print("\nStopped.")

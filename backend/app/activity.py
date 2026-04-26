@@ -37,7 +37,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from queue import Empty, Queue
-from typing import Deque, List, Literal, Optional, Tuple
+from typing import Any, Deque, List, Literal, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,8 @@ class ActivitySnapshot:
     ai_screen_state: Optional[BehaviorState] = None
     ai_screen_reason: Optional[str] = None
     ai_screen_checked_at: Optional[datetime] = None
+    ai_screen_confidence: Optional[float] = None
+    state_source: str = "rules"
 
     @property
     def distraction_streak(self) -> int:
@@ -106,6 +108,7 @@ POLL_INTERVAL_S: float = 1.0
 IDLE_THRESHOLD_S: float = 30.0
 AWAY_THRESHOLD_S: float = 120.0
 SWITCH_WINDOW_S: float = 60.0
+SWITCH_CLASSIFY_WINDOW_S: float = 15.0
 MULTITASKING_SWITCH_THRESHOLD: int = 5  # >= N switches within SWITCH_WINDOW_S
 POMODORO_MIN_MINUTES: int = 1
 POMODORO_MAX_MINUTES: int = 180
@@ -411,6 +414,60 @@ def _load_env_for_ai() -> None:
         load_dotenv(path, override=False)
 
 
+def _genai_use_vertex_ai() -> bool:
+    _load_env_for_ai()
+    return (
+        _env_truthy("GOOGLE_GENAI_USE_VERTEXAI")
+        or _env_truthy("GEMINI_USE_ADC")
+        or _env_truthy("TERPPET_USE_ADC")
+    )
+
+
+def _genai_vertex_project() -> Optional[str]:
+    _load_env_for_ai()
+    return (
+        os.getenv("GOOGLE_CLOUD_PROJECT")
+        or os.getenv("GOOGLE_PROJECT_ID")
+        or os.getenv("GCLOUD_PROJECT")
+    )
+
+
+def _genai_vertex_location() -> str:
+    _load_env_for_ai()
+    return (
+        os.getenv("GOOGLE_CLOUD_LOCATION")
+        or os.getenv("GOOGLE_CLOUD_REGION")
+        or os.getenv("GEMINI_LOCATION")
+        or "us-central1"
+    )
+
+
+def _screen_ai_credentials_configured() -> bool:
+    _load_env_for_ai()
+    return _genai_use_vertex_ai() and bool(_genai_vertex_project())
+
+
+def _build_genai_client() -> Tuple[Any, str]:
+    _load_env_for_ai()
+    from google import genai  # type: ignore
+
+    if not _genai_use_vertex_ai():
+        raise RuntimeError(
+            "ADC/Vertex AI is required. Set GOOGLE_GENAI_USE_VERTEXAI=true."
+        )
+
+    project = _genai_vertex_project()
+    if not project:
+        raise RuntimeError(
+            "ADC/Vertex AI is enabled but GOOGLE_CLOUD_PROJECT is not set"
+        )
+    location = _genai_vertex_location()
+    return (
+        genai.Client(vertexai=True, project=project, location=location),
+        f"adc:{project}/{location}",
+    )
+
+
 def _capture_screen_jpeg_bytes() -> bytes:
     """Capture the current macOS screen as JPEG bytes and delete the temp file.
 
@@ -461,15 +518,9 @@ def _classify_screen_with_gemini(
     title: Optional[str],
 ) -> ScreenAIReading:
     """Ask Gemini whether the visible screen looks focused or distracting."""
-    _load_env_for_ai()
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY/GOOGLE_API_KEY is not set")
-
-    from google import genai  # type: ignore
     from google.genai import types  # type: ignore
 
-    client = genai.Client(api_key=api_key)
+    client, _auth_mode = _build_genai_client()
     model = os.getenv("GEMINI_SCREEN_MODEL") or os.getenv("GEMINI_MODEL") or SCREEN_AI_MODEL_DEFAULT
     prompt = (
         "You are the focus classifier for TerpPet, an always-on study pet.\n"
@@ -591,6 +642,11 @@ class ActivityTracker:
         self._screen_ai_inflight = False
         self._screen_ai_next_due_monotonic = 0.0
         self._screen_ai_last_error: Optional[str] = None
+        self._screen_ai_started_count = 0
+        self._screen_ai_succeeded_count = 0
+        self._screen_ai_failed_count = 0
+        self._screen_ai_last_started_at: Optional[datetime] = None
+        self._screen_ai_last_completed_at: Optional[datetime] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -692,9 +748,9 @@ class ActivityTracker:
             self._focus_seconds_today = 0.0
 
         if self._mock:
-            state, app, title, url, seconds_since_input = self._mock_tick(now)
+            state, app, title, url, seconds_since_input, state_source = self._mock_tick(now)
         else:
-            state, app, title, url, seconds_since_input = self._live_tick(now)
+            state, app, title, url, seconds_since_input, state_source = self._live_tick(now)
         ai_reading = self._get_applicable_screen_ai(now, app)
 
         if state == "FOCUSED":
@@ -722,13 +778,17 @@ class ActivityTracker:
             ai_screen_checked_at=(
                 ai_reading.checked_at if ai_reading is not None else None
             ),
+            ai_screen_confidence=(
+                ai_reading.confidence if ai_reading is not None else None
+            ),
+            state_source=state_source,
         )
         with self._snapshot_lock:
             self._snapshot = snapshot
 
     def _live_tick(
         self, now: datetime
-    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float]:
+    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float, str]:
         app, title = _get_active_window()
         url = _extract_url_hint(title)
 
@@ -748,15 +808,22 @@ class ActivityTracker:
         if not self._listeners_active:
             seconds_since_input = 0.0
 
-        state = self._classify(
-            app, title, url, seconds_since_input, len(self._switch_history)
-        )
-        if state not in {"IDLE", "AWAY"}:
+        classify_cutoff = now - timedelta(seconds=SWITCH_CLASSIFY_WINDOW_S)
+        recent_switches = sum(1 for ts in self._switch_history if ts >= classify_cutoff)
+        state = self._classify(app, title, url, seconds_since_input, recent_switches)
+        state_source = "rules"
+
+        # Screen AI is a fallback for exactly the case macOS often creates:
+        # app/title are unavailable, so the rule classifier has no evidence and
+        # says IDLE. Still sample the screenshot on the configured cadence.
+        if self._screen_ai_enabled and seconds_since_input < AWAY_THRESHOLD_S:
             self._maybe_start_screen_ai_check(app, title)
-            ai_state = self._get_applicable_screen_ai(now, app)
-            if ai_state is not None:
-                state = ai_state.state
-        return state, app, title, url, seconds_since_input
+
+        ai_state = self._get_applicable_screen_ai(now, app)
+        if ai_state is not None and state != "AWAY":
+            state = ai_state.state
+            state_source = "screen_ai"
+        return state, app, title, url, seconds_since_input, state_source
 
     def _classify(
         self,
@@ -774,10 +841,10 @@ class ActivityTracker:
         haystack = " ".join(filter(None, (app, title, url))).lower()
         if any(p in haystack for p in DISTRACTION_PATTERNS):
             return "DISTRACTED"
-        if switches_in_window >= MULTITASKING_SWITCH_THRESHOLD:
-            return "MULTITASKING"
         if any(p in haystack for p in FOCUS_PATTERNS):
             return "FOCUSED"
+        if switches_in_window >= MULTITASKING_SWITCH_THRESHOLD:
+            return "MULTITASKING"
         if haystack.strip():
             return "FOCUSED"
         return "IDLE"
@@ -799,6 +866,8 @@ class ActivityTracker:
             self._screen_ai_next_due_monotonic = (
                 now_monotonic + self._screen_ai_interval_seconds
             )
+            self._screen_ai_started_count += 1
+            self._screen_ai_last_started_at = _utcnow()
 
         worker = threading.Thread(
             target=self._run_screen_ai_check,
@@ -814,14 +883,23 @@ class ActivityTracker:
         title: Optional[str],
     ) -> None:
         try:
+            if not _screen_ai_credentials_configured():
+                raise RuntimeError(
+                    "ADC/Vertex AI is required. Set GOOGLE_GENAI_USE_VERTEXAI=true "
+                    "and GOOGLE_CLOUD_PROJECT."
+                )
             image_bytes = _capture_screen_jpeg_bytes()
             reading = _classify_screen_with_gemini(image_bytes, app, title)
             with self._screen_ai_lock:
                 self._screen_ai_latest = reading
                 self._screen_ai_last_error = None
+                self._screen_ai_succeeded_count += 1
+                self._screen_ai_last_completed_at = reading.checked_at
         except Exception as exc:
             with self._screen_ai_lock:
                 self._screen_ai_last_error = str(exc)
+                self._screen_ai_failed_count += 1
+                self._screen_ai_last_completed_at = _utcnow()
             logger.info("Screen AI classification skipped/failed: %s", exc)
         finally:
             with self._screen_ai_lock:
@@ -857,11 +935,21 @@ class ActivityTracker:
                 "latest_reason": latest.reason if latest else None,
                 "latest_confidence": latest.confidence if latest else None,
                 "latest_checked_at": latest.checked_at if latest else None,
+                "started_count": self._screen_ai_started_count,
+                "succeeded_count": self._screen_ai_succeeded_count,
+                "failed_count": self._screen_ai_failed_count,
+                "last_started_at": self._screen_ai_last_started_at,
+                "last_completed_at": self._screen_ai_last_completed_at,
+                "auth_mode": (
+                    "adc"
+                    if _genai_use_vertex_ai() and _genai_vertex_project()
+                    else "none"
+                ),
             }
 
     def _mock_tick(
         self, now: datetime
-    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float]:
+    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float, str]:
         if self._mock_started_at is None:
             self._mock_started_at = now
         cycle_total = sum(d for _, d in _MOCK_CYCLE)
@@ -906,7 +994,7 @@ class ActivityTracker:
         while self._switch_history and self._switch_history[0] < cutoff:
             self._switch_history.popleft()
 
-        return chosen, scripted_app, scripted_title, url, seconds_since_input
+        return chosen, scripted_app, scripted_title, url, seconds_since_input, "mock"
 
     # ------------------------------------------------------------------
     # Pomodoro
@@ -1123,6 +1211,12 @@ def screen_ai_status() -> dict[str, object]:
             "latest_reason": None,
             "latest_confidence": None,
             "latest_checked_at": None,
+            "started_count": 0,
+            "succeeded_count": 0,
+            "failed_count": 0,
+            "last_started_at": None,
+            "last_completed_at": None,
+            "auth_mode": "none",
         }
     return tracker.screen_ai_status()
 
