@@ -38,6 +38,14 @@ class PetMood(str, Enum):
     SLEEPY = "SLEEPY"
     FOCUS_MODE = "FOCUS_MODE"
     EVOLVED = "EVOLVED"
+    GOOD_APPLE = "GOOD_APPLE"
+    BAD_APPLE = "BAD_APPLE"
+    JENGA = "JENGA"
+    GAMEBOY = "GAMEBOY"
+    GENTLE_BREATHING = "GENTLE_BREATHING"
+    ANNOYED_FOOT_TAPPING = "ANNOYED_FOOT_TAPPING"
+    ANNOYED_DOOM_SCROLLING = "ANNOYED_DOOM_SCROLLING"
+    EXAM_PANIC_MODE = "EXAM_PANIC_MODE"
 
 
 # ---------------------------------------------------------------------------
