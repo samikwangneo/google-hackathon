@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 
-import chillSrc from '../assets/pet/chill.svg'
-import walkSrc from '../assets/pet/walk.svg'
+import levelUpSrc from '../assets/pet/levelup.png'
 import { useTerpPetStore } from '../store'
+import { TerpPetSprite, type SpriteSheetConfig } from './TerpPetSprite'
 
 const moodCopy = {
   HAPPY: 'Locked in',
@@ -14,6 +14,14 @@ const moodCopy = {
   EVOLVED: 'Level up!'
 } as const
 
+const levelUpSheet: SpriteSheetConfig = {
+  src: levelUpSrc,
+  frameWidth: 704,
+  frameHeight: 704,
+  frames: 8,
+  frameDurationMs: 135
+}
+
 type Phase = 'walking' | 'chilling'
 
 const WALK_DURATION_S = 32
@@ -22,26 +30,13 @@ const PHASE_DURATION_MS: Record<Phase, number> = {
   chilling: 9000
 }
 
-// Flip the sprite instantly at the two direction-change moments (start of the
-// walk and the turnaround at the far edge). The tiny 0.001 windows give a
-// snap rather than a smooth rotation through 0.
+// Flip the same sprite at the two direction-change moments without swapping
+// animation sheets. This preserves the level-up test animation while walking.
 const SCALEX_KEYFRAMES = [1, -1, -1, 1, 1]
 const SCALEX_TIMES = [0, 0.001, 0.499, 0.501, 1]
 
-// Pet sprite is 178px wide and anchored at right: 34px. Reserve a bit of left
-// padding so the pet doesn't slam into the window edge.
-const PET_RIGHT_OFFSET_PX = 34 + 178
+const PET_RIGHT_OFFSET_PX = 28 + 128
 const LEFT_MARGIN_PX = 24
-
-const SPRITE_STYLE: React.CSSProperties = {
-  position: 'absolute',
-  inset: 0,
-  width: '100%',
-  height: '100%',
-  objectFit: 'contain',
-  pointerEvents: 'none',
-  userSelect: 'none'
-}
 
 export function Pet(): React.JSX.Element {
   const mood = useTerpPetStore((state) => state.pet_mood)
@@ -52,8 +47,8 @@ export function Pet(): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>('chilling')
   const [walkDistance, setWalkDistance] = useState(() =>
     typeof window === 'undefined'
-      ? 600
-      : Math.max(200, window.innerWidth - PET_RIGHT_OFFSET_PX - LEFT_MARGIN_PX)
+      ? 260
+      : Math.max(160, window.innerWidth - PET_RIGHT_OFFSET_PX - LEFT_MARGIN_PX)
   )
 
   useEffect(() => {
@@ -66,7 +61,7 @@ export function Pet(): React.JSX.Element {
 
   useEffect(() => {
     const handleResize = (): void => {
-      setWalkDistance(Math.max(200, window.innerWidth - PET_RIGHT_OFFSET_PX - LEFT_MARGIN_PX))
+      setWalkDistance(Math.max(160, window.innerWidth - PET_RIGHT_OFFSET_PX - LEFT_MARGIN_PX))
     }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
@@ -83,9 +78,7 @@ export function Pet(): React.JSX.Element {
       aria-label="Open TerpPet actions"
       onClick={toggleMenu}
       animate={{
-        x: isWalking
-          ? [0, -walkDistance * 0.5, -walkDistance, -walkDistance * 0.5, 0]
-          : 0,
+        x: isWalking ? [0, -walkDistance * 0.5, -walkDistance, -walkDistance * 0.5, 0] : 0,
         y: isWalking ? [0, -3, 0, -3, 0] : isSleepy ? [0, 7, 0] : [0, -6, 0],
         rotate: isAnnoyed ? [0, -6, 6, -4, 4, 0] : 0,
         scaleX: isWalking ? SCALEX_KEYFRAMES : 1,
@@ -101,11 +94,13 @@ export function Pet(): React.JSX.Element {
           : { duration: 0 }
       }}
     >
-      <img
-        src={isWalking ? walkSrc : chillSrc}
-        alt={isWalking ? 'Pet walking' : 'Pet chilling'}
-        draggable={false}
-        style={SPRITE_STYLE}
+      <span className="pet__orb" aria-hidden="true" />
+      <TerpPetSprite
+        sheet={levelUpSheet}
+        loop
+        autoPlay
+        className="pet__sprite"
+        title="TerpPet level up animation"
       />
       <span className="pet__status">
         <strong>{moodCopy[mood]}</strong>

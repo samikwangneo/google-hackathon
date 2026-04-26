@@ -1,8 +1,7 @@
 import type { OkResponse, PomodoroStartResponse } from '../types/contracts'
 
 const API_BASE_URL =
-  (import.meta.env.VITE_BACKEND_API_URL as string | undefined) ??
-  'http://127.0.0.1:8765'
+  (import.meta.env.VITE_BACKEND_API_URL as string | undefined) ?? 'http://127.0.0.1:8765'
 
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
