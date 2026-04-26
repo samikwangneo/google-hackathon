@@ -20,6 +20,7 @@ from typing import Any, Optional
 from dotenv import find_dotenv, load_dotenv
 
 from .schemas import (
+    BrainChatMessage,
     QuizQuestion,
     StudyPlanBlock,
     StudyPlanResponse,
@@ -206,3 +207,92 @@ def summarize_and_quiz(text: str) -> SummarizeResponse:
     except Exception as exc:
         log.warning("Gemini summarize parse failed (%s); using canned", exc)
         return _canned_summary_quiz(text)
+
+
+# ---------------------------------------------------------------------------
+# Brain: explain-the-screen + multi-turn follow-ups
+# ---------------------------------------------------------------------------
+
+
+_BRAIN_SYSTEM_PROMPT = (
+    "You are TerpPet's friendly screen explainer. Look at the attached screenshot "
+    "and explain what's happening on the screen simply, in plain English. "
+    "Be conversational and concise — 2 to 4 short sentences. "
+    "Don't quote private text verbatim. After the first explanation, the user may "
+    "ask follow-up questions about the same screenshot; answer them briefly."
+)
+
+_BRAIN_CANNED_REPLY = (
+    "I'd love to explain your screen, but Gemini isn't configured right now. "
+    "Set GOOGLE_GENAI_USE_VERTEXAI=true and GOOGLE_CLOUD_PROJECT in .env, then "
+    "run `gcloud auth application-default login` to enable this."
+)
+
+
+def _brain_image_part(image_bytes: bytes) -> Any:
+    from google.genai import types  # type: ignore
+
+    return types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+
+
+def explain_screen(image_bytes: bytes) -> str:
+    """Single-shot explanation of what's visible on the screenshot."""
+    client = _get_client()
+    if client is None:
+        return _BRAIN_CANNED_REPLY
+    try:
+        resp = client.models.generate_content(
+            model=_DEFAULT_MODEL,
+            contents=[_BRAIN_SYSTEM_PROMPT, _brain_image_part(image_bytes)],
+        )
+        text = (getattr(resp, "text", None) or "").strip()
+        return text or _BRAIN_CANNED_REPLY
+    except Exception as exc:  # pragma: no cover — runtime fallback
+        log.warning("Gemini explain_screen failed (%s); using canned", exc)
+        return _BRAIN_CANNED_REPLY
+
+
+def chat_about_screen(
+    image_bytes: bytes,
+    history: list[BrainChatMessage],
+    message: str,
+) -> str:
+    """Multi-turn follow-up grounded in the original screenshot."""
+    client = _get_client()
+    if client is None:
+        return _BRAIN_CANNED_REPLY
+    try:
+        from google.genai import types  # type: ignore
+
+        contents: list[Any] = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=_BRAIN_SYSTEM_PROMPT),
+                    _brain_image_part(image_bytes),
+                ],
+            )
+        ]
+        for turn in history:
+            role = "model" if turn.role == "assistant" else "user"
+            contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=turn.text)],
+                )
+            )
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=message)],
+            )
+        )
+        resp = client.models.generate_content(
+            model=_DEFAULT_MODEL,
+            contents=contents,
+        )
+        text = (getattr(resp, "text", None) or "").strip()
+        return text or _BRAIN_CANNED_REPLY
+    except Exception as exc:  # pragma: no cover — runtime fallback
+        log.warning("Gemini chat_about_screen failed (%s); using canned", exc)
+        return _BRAIN_CANNED_REPLY

@@ -118,6 +118,30 @@ export interface BrainTodayResponse {
   score: number
 }
 
+export interface BrainChatMessage {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface BrainExplainRequest {
+  session_id: string | null
+}
+
+export interface BrainExplainResponse {
+  session_id: string
+  reply: string
+}
+
+export interface BrainChatRequest {
+  session_id: string
+  message: string
+  history: BrainChatMessage[]
+}
+
+export interface BrainChatResponse {
+  reply: string
+}
+
 export interface StudySpot {
   name: string
   vibe: string

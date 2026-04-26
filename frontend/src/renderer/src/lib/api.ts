@@ -1,4 +1,10 @@
-import type { OkResponse, PomodoroStartResponse } from '../types/contracts'
+import type {
+  BrainChatMessage,
+  BrainChatResponse,
+  BrainExplainResponse,
+  OkResponse,
+  PomodoroStartResponse
+} from '../types/contracts'
 
 const API_BASE_URL =
   (import.meta.env.VITE_BACKEND_API_URL as string | undefined) ?? 'http://127.0.0.1:8765'
@@ -22,4 +28,20 @@ export async function startPomodoro(minutes: number): Promise<PomodoroStartRespo
 
 export async function stopPomodoro(): Promise<OkResponse> {
   return postJSON<OkResponse>('/api/pomodoro/stop')
+}
+
+export async function brainExplain(sessionId: string | null): Promise<BrainExplainResponse> {
+  return postJSON<BrainExplainResponse>('/api/brain/explain', { session_id: sessionId })
+}
+
+export async function brainChat(
+  sessionId: string,
+  message: string,
+  history: BrainChatMessage[]
+): Promise<BrainChatResponse> {
+  return postJSON<BrainChatResponse>('/api/brain/chat', {
+    session_id: sessionId,
+    message,
+    history
+  })
 }

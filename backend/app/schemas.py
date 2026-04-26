@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -170,6 +170,30 @@ class BrainTodayResponse(BaseModel):
     summary: str
     topics: list[str]
     score: int
+
+
+class BrainChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class BrainExplainRequest(BaseModel):
+    session_id: Optional[str] = None
+
+
+class BrainExplainResponse(BaseModel):
+    session_id: str
+    reply: str
+
+
+class BrainChatRequest(BaseModel):
+    session_id: str
+    message: str
+    history: list[BrainChatMessage] = []
+
+
+class BrainChatResponse(BaseModel):
+    reply: str
 
 
 # ---------------------------------------------------------------------------

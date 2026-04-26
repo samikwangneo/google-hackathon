@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
+import { BrainPanel } from './components/BrainPanel'
 import { EvolutionEffect } from './components/EvolutionEffect'
 import { OrbMenu } from './components/OrbMenu'
 import { Pet } from './components/Pet'
@@ -81,16 +82,7 @@ function App(): React.JSX.Element {
                 <p>Ready for Person D&apos;s Gemini route; the typed API helper is wired.</p>
               </section>
             )}
-            {activePanel === 'brain' && (
-              <section className="panel">
-                <div className="panel__eyebrow">Memory</div>
-                <h2>Brain search</h2>
-                <p>
-                  The REST client can query today&apos;s notes and memory hits once the backend has
-                  data.
-                </p>
-              </section>
-            )}
+            {activePanel === 'brain' && <BrainPanel />}
           </motion.div>
         )}
       </AnimatePresence>

@@ -480,7 +480,7 @@ def _build_genai_client() -> Tuple[Any, str]:
     )
 
 
-def _capture_screen_jpeg_bytes() -> bytes:
+def capture_screen_jpeg_bytes() -> bytes:
     """Capture the current macOS screen as JPEG bytes and delete the temp file.
 
     We use the system `screencapture` binary to avoid introducing another
@@ -902,7 +902,7 @@ class ActivityTracker:
                     "ADC/Vertex AI is required. Set GOOGLE_GENAI_USE_VERTEXAI=true "
                     "and GOOGLE_CLOUD_PROJECT."
                 )
-            image_bytes = _capture_screen_jpeg_bytes()
+            image_bytes = capture_screen_jpeg_bytes()
             reading = _classify_screen_with_gemini(image_bytes, app, title)
             with self._screen_ai_lock:
                 self._screen_ai_latest = reading

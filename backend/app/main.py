@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import activity, ai, brain, state, umd, vision
 from .schemas import (
+    BrainChatRequest,
+    BrainChatResponse,
+    BrainExplainRequest,
+    BrainExplainResponse,
     BrainSearchResponse,
     BrainTodayResponse,
     DiningRec,
@@ -143,6 +149,47 @@ def brain_search(q: str = "") -> BrainSearchResponse:
 @app.get("/api/brain/today", response_model=BrainTodayResponse)
 def brain_today() -> BrainTodayResponse:
     return brain.today_summary()
+
+
+# In-memory store of screenshots keyed by session_id. Bounded so a long-lived
+# backend doesn't accumulate megabytes of JPEGs forever — eviction is FIFO.
+_BRAIN_SESSIONS: "OrderedDict[str, bytes]" = OrderedDict()
+_BRAIN_SESSION_CAP = 16
+
+
+def _brain_session_put(session_id: str, image_bytes: bytes) -> None:
+    _BRAIN_SESSIONS[session_id] = image_bytes
+    while len(_BRAIN_SESSIONS) > _BRAIN_SESSION_CAP:
+        _BRAIN_SESSIONS.popitem(last=False)
+
+
+@app.post("/api/brain/explain", response_model=BrainExplainResponse)
+def brain_explain(req: BrainExplainRequest) -> BrainExplainResponse:
+    session_id = req.session_id
+    if session_id and session_id in _BRAIN_SESSIONS:
+        image_bytes = _BRAIN_SESSIONS[session_id]
+    else:
+        try:
+            image_bytes = activity.capture_screen_jpeg_bytes()
+        except Exception as exc:
+            log.warning("brain_explain screencap failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"screen capture failed: {exc}")
+        session_id = uuid.uuid4().hex
+        _brain_session_put(session_id, image_bytes)
+
+    reply = ai.explain_screen(image_bytes)
+    brain.log_event("brain_explain", reply[:120])
+    return BrainExplainResponse(session_id=session_id, reply=reply)
+
+
+@app.post("/api/brain/chat", response_model=BrainChatResponse)
+def brain_chat(req: BrainChatRequest) -> BrainChatResponse:
+    image_bytes = _BRAIN_SESSIONS.get(req.session_id)
+    if image_bytes is None:
+        raise HTTPException(status_code=404, detail="brain session not found; reopen the panel")
+    reply = ai.chat_about_screen(image_bytes, req.history, req.message)
+    brain.log_event("brain_chat", req.message[:120])
+    return BrainChatResponse(reply=reply)
 
 
 # ---------------------------------------------------------------------------
