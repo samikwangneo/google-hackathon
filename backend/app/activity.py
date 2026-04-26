@@ -10,7 +10,8 @@ Public surface (do NOT change without pinging the channel):
 Person D scaffold: a working in-memory pomodoro timer plus IDLE behavior
 so the rest of the system (state.py, main.py) runs end-to-end. Person C
 replaces the body of current_state() with real window/keyboard tracking
-and the behavior classifier.
+and the behavior classifier. Use pywinctl (not pygetwindow) for active-window
+polling — pygetwindow does not work on macOS.
 """
 
 from __future__ import annotations

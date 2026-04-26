@@ -5,6 +5,6 @@ google-genai
 python-dotenv
 opencv-python
 mediapipe
-pygetwindow
+pywinctl
 pynput
 psutil
