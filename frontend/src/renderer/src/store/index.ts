@@ -12,11 +12,14 @@ import type { SocketStatus } from '../lib/ws'
 
 export type ActivePanel = 'pomodoro' | 'study-plan' | 'brain' | 'stats' | null
 
+export type PetSide = 'left' | 'right'
+
 interface TerpPetState extends BehaviorUpdate {
   activePanel: ActivePanel
   connectionStatus: SocketStatus
   lastFrameAt: number | null
   menuOpen: boolean
+  petSide: PetSide
   showEvolution: boolean
   xpFlash: number | null
   applyFrame: (frame: BehaviorSocketFrame) => void
@@ -25,6 +28,7 @@ interface TerpPetState extends BehaviorUpdate {
   setActivePanel: (panel: ActivePanel) => void
   setConnectionStatus: (status: SocketStatus) => void
   setMenuOpen: (open: boolean) => void
+  setPetSide: (side: PetSide) => void
   setPomodoro: (pomodoro: PomodoroState) => void
   toggleMenu: () => void
 }
@@ -60,6 +64,7 @@ export const useTerpPetStore = create<TerpPetState>((set) => ({
   connectionStatus: 'closed',
   lastFrameAt: null,
   menuOpen: false,
+  petSide: 'right',
   showEvolution: false,
   xpFlash: null,
   applyFrame: (frame) =>
@@ -99,6 +104,7 @@ export const useTerpPetStore = create<TerpPetState>((set) => ({
   setActivePanel: (panel) => set({ activePanel: panel, menuOpen: false }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setMenuOpen: (open) => set({ menuOpen: open }),
+  setPetSide: (petSide) => set({ petSide }),
   setPomodoro: (pomodoro) => set({ pomodoro }),
   toggleMenu: () => set((state) => ({ menuOpen: !state.menuOpen }))
 }))
