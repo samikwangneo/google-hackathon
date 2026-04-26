@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import { BrainPanel } from './components/BrainPanel'
@@ -44,6 +44,16 @@ function App(): React.JSX.Element {
   const setConnectionStatus = useTerpPetStore((state) => state.setConnectionStatus)
   const connectionStatus = useTerpPetStore((state) => state.connectionStatus)
   const lastFrameAt = useTerpPetStore((state) => state.lastFrameAt)
+  const [checkedAssignments, setCheckedAssignments] = useState<Set<string>>(() => new Set())
+
+  const toggleAssignment = (key: string): void => {
+    setCheckedAssignments((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   useEffect(() => {
     const socket = connectBehaviorSocket(applyFrame, setConnectionStatus)
@@ -123,27 +133,42 @@ function App(): React.JSX.Element {
                 <div className="panel__eyebrow">Canvas due soon</div>
                 <h2>Upcoming assignments</h2>
                 <div className="assignments-panel__list" aria-label="Upcoming assignments">
-                  {upcomingAssignments.map((assignment) => (
-                    <article className="assignment-card" key={`${assignment.course}-${assignment.title}`}>
-                      <div className="assignment-card__date">
-                        <span>{assignment.weekday}</span>
-                        <strong>{assignment.day}</strong>
-                      </div>
-                      <div className="assignment-card__body">
-                        <div className="assignment-card__course">
-                          <span aria-hidden="true">{assignment.icon === 'rocket' ? 'R' : 'N'}</span>
-                          {assignment.course}
+                  {upcomingAssignments.map((assignment) => {
+                    const key = `${assignment.course}-${assignment.title}`
+                    const checked = checkedAssignments.has(key)
+                    return (
+                      <article
+                        className={`assignment-card${checked ? ' assignment-card--done' : ''}`}
+                        key={key}
+                      >
+                        <div className="assignment-card__date">
+                          <span>{assignment.weekday}</span>
+                          <strong>{assignment.day}</strong>
                         </div>
-                        <h3>{assignment.title}</h3>
-                        <time>{assignment.time}</time>
-                      </div>
-                      <button
-                        type="button"
-                        className="assignment-card__check"
-                        aria-label={`Mark ${assignment.title} complete`}
-                      />
-                    </article>
-                  ))}
+                        <div className="assignment-card__body">
+                          <div className="assignment-card__course">
+                            <span aria-hidden="true">{assignment.icon === 'rocket' ? 'R' : 'N'}</span>
+                            {assignment.course}
+                          </div>
+                          <h3>{assignment.title}</h3>
+                          <time>{assignment.time}</time>
+                        </div>
+                        <button
+                          type="button"
+                          className="assignment-card__check"
+                          aria-label={`Mark ${assignment.title} complete`}
+                          aria-pressed={checked}
+                          onClick={() => toggleAssignment(key)}
+                        >
+                          {checked && (
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <polyline points="5 12 10 17 19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      </article>
+                    )
+                  })}
                 </div>
               </section>
             )}

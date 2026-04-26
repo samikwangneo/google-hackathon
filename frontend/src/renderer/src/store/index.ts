@@ -10,7 +10,7 @@ import type {
 } from '../types/contracts'
 import type { SocketStatus } from '../lib/ws'
 
-export type ActivePanel = 'pomodoro' | 'study-plan' | 'brain' | 'stats' | null
+export type ActivePanel = 'pomodoro' | 'study-plan' | 'umd' | 'brain' | 'stats' | null
 
 export type PetSide = 'left' | 'right'
 
@@ -101,7 +101,7 @@ export const useTerpPetStore = create<TerpPetState>((set) => ({
     }),
   clearEvolution: () => set({ showEvolution: false, xpFlash: null }),
   closePanel: () => set({ activePanel: null }),
-  setActivePanel: (panel) => set({ activePanel: panel, menuOpen: false }),
+  setActivePanel: (panel) => set({ activePanel: panel }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setMenuOpen: (open) => set({ menuOpen: open }),
   setPetSide: (petSide) => set({ petSide }),

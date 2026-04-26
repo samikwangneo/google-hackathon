@@ -42,14 +42,17 @@ const BarChart = (): React.JSX.Element => (
   </svg>
 )
 
+// Evenly spaced 30 degrees apart on an arc that fans up and to the left from
+// the pet. With radius 150 the chord between neighbors is ~78px, so the 80px
+// orbs sit shoulder-to-shoulder without overlapping.
 const items: Array<{
   id: OrbId
   label: string
   Icon: () => React.JSX.Element
   angle: number
 }> = [
-  { id: 'pomodoro', label: 'Pomodoro', Icon: Stopwatch, angle: -175 },
-  { id: 'study-plan', label: 'Assignments', Icon: Clipboard, angle: -140 },
+  { id: 'pomodoro', label: 'Pomodoro', Icon: Stopwatch, angle: -165 },
+  { id: 'study-plan', label: 'Assignments', Icon: Clipboard, angle: -135 },
   { id: 'brain', label: 'Brain', Icon: Brain, angle: -105 },
   { id: 'stats', label: 'Stats', Icon: BarChart, angle: -75 }
 ]
@@ -74,7 +77,7 @@ export function OrbMenu(): React.JSX.Element {
           transition={{ type: 'spring', stiffness: 360, damping: 28 }}
         >
           {items.map((item, index) => {
-            const radius = 132
+            const radius = 150
             const angle = petSide === 'left' ? 180 - item.angle : item.angle
             const radians = (angle * Math.PI) / 180
             const x = Math.cos(radians) * radius
