@@ -10,7 +10,7 @@ const items: Array<{
   angle: number
 }> = [
   { id: 'pomodoro', label: 'Pomodoro', glyph: '25', angle: -175 },
-  { id: 'study-plan', label: 'Study Plan', glyph: 'SP', angle: -140 },
+  { id: 'study-plan', label: 'Assignments', glyph: 'Due', angle: -140 },
   { id: 'brain', label: 'Brain', glyph: 'BR', angle: -105 },
   { id: 'stats', label: 'Stats', glyph: 'XP', angle: -75 }
 ]

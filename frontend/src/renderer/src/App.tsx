@@ -9,6 +9,33 @@ import { StatsPanel } from './components/StatsPanel'
 import { connectBehaviorSocket } from './lib/ws'
 import { useTerpPetStore } from './store'
 
+const upcomingAssignments = [
+  {
+    weekday: 'Thu',
+    day: '16',
+    course: 'ECON315',
+    title: 'Group meeting',
+    time: '11:59 PM',
+    icon: 'memo'
+  },
+  {
+    weekday: 'Mon',
+    day: '27',
+    course: 'ECON418A',
+    title: 'Problem Set 3',
+    time: '5:00 PM',
+    icon: 'memo'
+  },
+  {
+    weekday: 'Tue',
+    day: '28',
+    course: 'ECON315',
+    title: 'Quiz 8',
+    time: '2:00 PM',
+    icon: 'rocket'
+  }
+]
+
 function App(): React.JSX.Element {
   const activePanel = useTerpPetStore((state) => state.activePanel)
   const closePanel = useTerpPetStore((state) => state.closePanel)
@@ -75,10 +102,32 @@ function App(): React.JSX.Element {
             {activePanel === 'pomodoro' && <PomodoroPanel />}
             {activePanel === 'stats' && <StatsPanel />}
             {activePanel === 'study-plan' && (
-              <section className="panel">
-                <div className="panel__eyebrow">Soon</div>
-                <h2>Study plan orb</h2>
-                <p>Ready for Person D&apos;s Gemini route; the typed API helper is wired.</p>
+              <section className="panel assignments-panel">
+                <div className="panel__eyebrow">Canvas due soon</div>
+                <h2>Upcoming assignments</h2>
+                <div className="assignments-panel__list" aria-label="Upcoming assignments">
+                  {upcomingAssignments.map((assignment) => (
+                    <article className="assignment-card" key={`${assignment.course}-${assignment.title}`}>
+                      <div className="assignment-card__date">
+                        <span>{assignment.weekday}</span>
+                        <strong>{assignment.day}</strong>
+                      </div>
+                      <div className="assignment-card__body">
+                        <div className="assignment-card__course">
+                          <span aria-hidden="true">{assignment.icon === 'rocket' ? 'R' : 'N'}</span>
+                          {assignment.course}
+                        </div>
+                        <h3>{assignment.title}</h3>
+                        <time>{assignment.time}</time>
+                      </div>
+                      <button
+                        type="button"
+                        className="assignment-card__check"
+                        aria-label={`Mark ${assignment.title} complete`}
+                      />
+                    </article>
+                  ))}
+                </div>
               </section>
             )}
             {activePanel === 'brain' && (
