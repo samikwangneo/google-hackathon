@@ -49,7 +49,8 @@ class PresenceSnapshot:
 
 _TARGET_FPS = 5
 _BUFFER_SIZE = 5
-_GAZE_YAW_THRESHOLD = 0.30  # normalized horizontal offset of nose vs face center
+_HEAD_YAW_THRESHOLD = float(os.getenv("VISION_HEAD_YAW_THRESHOLD", "0.22"))
+_IRIS_OFFSET_THRESHOLD = float(os.getenv("VISION_IRIS_OFFSET_THRESHOLD", "0.18"))
 _CAMERA_INDEX_ENV = "VISION_CAMERA_INDEX"
 _DEFAULT_MAC_CAMERA_INDEX = 1
 
@@ -245,6 +246,10 @@ def _make_detector() -> tuple[str, Detector]:
     mp_detector = _try_mediapipe()
     if mp_detector is not None:
         return "mediapipe", mp_detector
+    log.warning(
+        "vision: using Haar fallback; it only supports PRESENT/ABSENT and "
+        "cannot emit LOOKING_AWAY"
+    )
     return "haar", _make_haar_detector()
 
 
@@ -258,7 +263,7 @@ def _try_mediapipe() -> Detector | None:
     try:
         face_mesh = mp.solutions.face_mesh.FaceMesh(
             max_num_faces=1,
-            refine_landmarks=False,
+            refine_landmarks=True,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -281,20 +286,78 @@ def _try_mediapipe() -> Detector | None:
             return "ABSENT", 0.0
 
         lm = res.multi_face_landmarks[0].landmark
-        # Yaw estimate: nose tip (1) horizontal offset relative to face width (left=234, right=454)
-        nose_x = lm[1].x
-        left_x = lm[234].x
-        right_x = lm[454].x
-        face_center = (left_x + right_x) / 2
-        face_width = max(abs(right_x - left_x), 1e-6)
-        yaw_norm = (nose_x - face_center) / face_width
-        log.debug("mediapipe: face yaw_norm=%.2f", yaw_norm)
+        yaw_norm = _head_yaw_norm(lm)
+        iris_offset = _iris_offset_norm(lm)
+        log.debug(
+            "mediapipe: yaw_norm=%.2f iris_offset=%s thresholds=(yaw %.2f, iris %.2f)",
+            yaw_norm,
+            "n/a" if iris_offset is None else f"{iris_offset:.2f}",
+            _HEAD_YAW_THRESHOLD,
+            _IRIS_OFFSET_THRESHOLD,
+        )
 
-        if abs(yaw_norm) > _GAZE_YAW_THRESHOLD:
-            return "LOOKING_AWAY", 0.8
+        looking_by_head = abs(yaw_norm) > _HEAD_YAW_THRESHOLD
+        looking_by_eyes = (
+            iris_offset is not None and abs(iris_offset) > _IRIS_OFFSET_THRESHOLD
+        )
+        if looking_by_head or looking_by_eyes:
+            return "LOOKING_AWAY", 0.85
         return "PRESENT", 0.9
 
     return detect
+
+
+def _head_yaw_norm(lm: object) -> float:
+    """Nose-tip horizontal offset relative to face width."""
+    nose_x = lm[1].x
+    left_x = lm[234].x
+    right_x = lm[454].x
+    face_center = (left_x + right_x) / 2
+    face_width = max(abs(right_x - left_x), 1e-6)
+    return float((nose_x - face_center) / face_width)
+
+
+def _eye_offset(
+    lm: object,
+    left_corner_idx: int,
+    right_corner_idx: int,
+    iris_indices: tuple[int, ...],
+) -> float | None:
+    """Return iris offset from eye center, normalized to eye width.
+
+    Needs MediaPipe `refine_landmarks=True`; older/fallback detectors won't have
+    iris landmarks, in which case this returns None.
+    """
+    try:
+        left_x = lm[left_corner_idx].x
+        right_x = lm[right_corner_idx].x
+        iris_x = sum(lm[i].x for i in iris_indices) / len(iris_indices)
+    except Exception:
+        return None
+    eye_center = (left_x + right_x) / 2
+    eye_width = max(abs(right_x - left_x), 1e-6)
+    return float((iris_x - eye_center) / eye_width)
+
+
+def _iris_offset_norm(lm: object) -> float | None:
+    """Average left/right iris offset.
+
+    Landmark groups:
+      * 33/133 + 468-472 for one eye
+      * 362/263 + 473-477 for the other eye
+    The sign can be mirrored by camera/platform, so callers use abs().
+    """
+    offsets = [
+        value
+        for value in (
+            _eye_offset(lm, 33, 133, (468, 469, 470, 471, 472)),
+            _eye_offset(lm, 362, 263, (473, 474, 475, 476, 477)),
+        )
+        if value is not None
+    ]
+    if not offsets:
+        return None
+    return sum(offsets) / len(offsets)
 
 
 def _make_haar_detector() -> Detector:
