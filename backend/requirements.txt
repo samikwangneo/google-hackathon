@@ -8,7 +8,6 @@
 # Versions are pinned to exact known-good builds so every team member gets
 # a reproducible env. Bump deliberately, not accidentally.
 
-opencv-python>=4.9
 fastapi==0.136.1
 uvicorn[standard]==0.46.0
 pydantic==2.13.3

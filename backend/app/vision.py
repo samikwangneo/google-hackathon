@@ -11,6 +11,8 @@ Never persists frames. Only the derived signal lives anywhere.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 import time
 from collections import deque
@@ -42,6 +44,8 @@ class PresenceSnapshot:
 _TARGET_FPS = 5
 _BUFFER_SIZE = 5
 _GAZE_YAW_THRESHOLD = 0.30  # normalized horizontal offset of nose vs face center
+_CAMERA_INDEX_ENV = "VISION_CAMERA_INDEX"
+_DEFAULT_MAC_CAMERA_INDEX = 1
 
 _lock = threading.Lock()
 _latest: PresenceSnapshot | None = None
@@ -69,10 +73,11 @@ def start() -> None:
     if _thread is not None and _thread.is_alive():
         return
 
-    log.info("vision: opening webcam...")
-    _cap = cv2.VideoCapture(0)
+    camera_index = _select_camera_index()
+    log.info("vision: opening webcam index %d...", camera_index)
+    _cap = _open_camera(camera_index)
     if not _cap.isOpened():
-        log.error("vision: could not open webcam (index 0)")
+        log.error("vision: could not open webcam (index %d)", camera_index)
         _cap = None
         return
 
@@ -83,6 +88,26 @@ def start() -> None:
     _stop.clear()
     _thread = threading.Thread(target=_capture_loop, name="vision", daemon=True)
     _thread.start()
+
+
+def _select_camera_index() -> int:
+    configured = os.environ.get(_CAMERA_INDEX_ENV)
+    if configured is not None:
+        try:
+            return int(configured)
+        except ValueError:
+            log.warning("vision: ignoring invalid %s=%r", _CAMERA_INDEX_ENV, configured)
+
+    if sys.platform == "darwin":
+        return _DEFAULT_MAC_CAMERA_INDEX
+
+    return 0
+
+
+def _open_camera(index: int) -> "cv2.VideoCapture":
+    if sys.platform == "darwin":
+        return cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+    return cv2.VideoCapture(index)
 
 
 def stop() -> None:
@@ -245,7 +270,6 @@ def _make_haar_detector() -> Detector:
 
 
 if __name__ == "__main__":
-    import os
     level = logging.DEBUG if os.environ.get("VISION_DEBUG") else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
     start()
