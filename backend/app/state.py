@@ -64,11 +64,14 @@ def _pet_mood(
     presence: PresenceState,
     pomodoro_running: bool,
     just_evolved: bool,
+    phone_present: bool,
 ) -> PetMood:
     if just_evolved:
         return PetMood.EVOLVED
     if presence == PresenceState.ABSENT:
         return PetMood.SLEEPY
+    if phone_present:
+        return PetMood.ANNOYED
     if pomodoro_running and behavior == BehaviorState.FOCUSED:
         return PetMood.FOCUS_MODE
     if behavior == BehaviorState.DISTRACTED:
@@ -96,6 +99,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
     global _xp, _level, _focus_seconds, _pomodoros_completed, _just_evolved
 
     presence_snap = vision.current_presence()
+    phone_present = bool(getattr(presence_snap, "phone_present", False))
     activity_snap = activity.current_state()
     pomodoro_raw = activity.pomodoro_status()
     completions = len(activity.drain_pomodoro_events())
@@ -134,6 +138,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
             presence_snap.state,
             pomodoro.running,
             evolved_this_tick or _just_evolved,
+            phone_present,
         )
         _just_evolved = False
 
@@ -147,6 +152,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
             xp=_xp,
             level=_level,
             pomodoro=pomodoro,
+            phone_present=phone_present,
         )
 
 
