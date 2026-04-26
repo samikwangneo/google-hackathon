@@ -24,10 +24,13 @@ Hard rules:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -60,6 +63,14 @@ class ActivitySnapshot:
     window_switches_60s: int
     timestamp: datetime
     mock: bool
+    ai_screen_state: Optional[BehaviorState] = None
+    ai_screen_reason: Optional[str] = None
+    ai_screen_checked_at: Optional[datetime] = None
+
+    @property
+    def distraction_streak(self) -> int:
+        """Compatibility field expected by the state aggregator."""
+        return int(self.distraction_streak_seconds)
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,16 @@ class PomodoroCompletedEvent:
     minutes: int
 
 
+@dataclass(frozen=True)
+class ScreenAIReading:
+    state: BehaviorState
+    reason: str
+    confidence: float
+    checked_at: datetime
+    source_app: Optional[str]
+    source_window: Optional[str]
+
+
 # ---------------------------------------------------------------------------
 # Tunable constants
 # ---------------------------------------------------------------------------
@@ -88,6 +109,10 @@ SWITCH_WINDOW_S: float = 60.0
 MULTITASKING_SWITCH_THRESHOLD: int = 5  # >= N switches within SWITCH_WINDOW_S
 POMODORO_MIN_MINUTES: int = 1
 POMODORO_MAX_MINUTES: int = 180
+SCREEN_AI_DEFAULT_INTERVAL_S: float = 10.0
+SCREEN_AI_MAX_STALENESS_S: float = 14.0
+SCREEN_AI_SCREENSHOT_TIMEOUT_S: float = 3.0
+SCREEN_AI_MODEL_DEFAULT: str = "gemini-2.5-flash"
 
 # Substring patterns matched against ``app + title + url`` (lowercased).
 DISTRACTION_PATTERNS: Tuple[str, ...] = (
@@ -357,6 +382,141 @@ def _empty_pomodoro() -> PomodoroState:
     )
 
 
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %.1f", name, raw, default)
+        return default
+    return max(minimum, value)
+
+
+def _load_env_for_ai() -> None:
+    try:
+        from dotenv import find_dotenv, load_dotenv  # type: ignore
+    except Exception:
+        return
+    path = find_dotenv(usecwd=True)
+    if path:
+        load_dotenv(path, override=False)
+
+
+def _capture_screen_jpeg_bytes() -> bytes:
+    """Capture the current macOS screen as JPEG bytes and delete the temp file.
+
+    We use the system `screencapture` binary to avoid introducing another
+    dependency. The file is temporary and removed immediately after reading.
+    """
+    if sys.platform != "darwin":
+        raise RuntimeError("screen AI capture is currently implemented for macOS only")
+
+    tmp_name: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_name = tmp.name
+        proc = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", tmp_name],
+            check=False,
+            capture_output=True,
+            timeout=SCREEN_AI_SCREENSHOT_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"screencapture failed ({proc.returncode}): {stderr}")
+        with open(tmp_name, "rb") as fh:
+            data = fh.read()
+        if not data:
+            raise RuntimeError("screencapture produced an empty image")
+        return data
+    finally:
+        if tmp_name:
+            try:
+                os.remove(tmp_name)
+            except OSError:
+                pass
+
+
+def _parse_ai_behavior_state(value: object) -> Optional[BehaviorState]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    if normalized in {"FOCUSED", "DISTRACTED", "IDLE", "MULTITASKING", "AWAY"}:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
+def _classify_screen_with_gemini(
+    image_bytes: bytes,
+    app: Optional[str],
+    title: Optional[str],
+) -> ScreenAIReading:
+    """Ask Gemini whether the visible screen looks focused or distracting."""
+    _load_env_for_ai()
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY/GOOGLE_API_KEY is not set")
+
+    from google import genai  # type: ignore
+    from google.genai import types  # type: ignore
+
+    client = genai.Client(api_key=api_key)
+    model = os.getenv("GEMINI_SCREEN_MODEL") or os.getenv("GEMINI_MODEL") or SCREEN_AI_MODEL_DEFAULT
+    prompt = (
+        "You are the focus classifier for TerpPet, an always-on study pet.\n"
+        "Look at this screenshot and decide whether the student appears focused "
+        "on productive study/work or distracted.\n\n"
+        "Return ONLY JSON with this exact shape:\n"
+        '{"state":"FOCUSED|DISTRACTED|MULTITASKING|IDLE|AWAY",'
+        '"reason":"short reason under 80 chars","confidence":0.0}\n\n'
+        "Rules:\n"
+        "- FOCUSED: coding, docs, notes, textbooks, UMD/Canvas, research, IDEs, terminal.\n"
+        "- DISTRACTED: YouTube/shorts, social feeds, memes, shopping, streaming, games.\n"
+        "- MULTITASKING: several unrelated apps/pages visible at once.\n"
+        "- Do not infer IDLE/AWAY unless the screen is locked or blank; input tracking handles that.\n"
+        "- Do not quote private screen text. Keep reason high level.\n\n"
+        f"Known active app: {app or 'unknown'}\n"
+        f"Known window title: {title or 'unknown'}\n"
+    )
+    resp = client.models.generate_content(
+        model=model,
+        contents=[
+            prompt,
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    text = getattr(resp, "text", None)
+    if not text:
+        raise RuntimeError("Gemini returned no text")
+    parsed = json.loads(text)
+    state = _parse_ai_behavior_state(parsed.get("state"))
+    if state is None:
+        raise RuntimeError(f"Gemini returned invalid state: {parsed!r}")
+    reason = str(parsed.get("reason") or "AI screen classification").strip()
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return ScreenAIReading(
+        state=state,
+        reason=reason[:160],
+        confidence=max(0.0, min(1.0, confidence)),
+        checked_at=_utcnow(),
+        source_app=app,
+        source_window=title,
+    )
+
+
 class ActivityTracker:
     """Owns the 1 Hz polling loop, the input listeners, and the Pomodoro timer.
 
@@ -365,12 +525,32 @@ class ActivityTracker:
     delegating wrappers at the bottom of this file).
     """
 
-    def __init__(self, mock: bool = False) -> None:
+    def __init__(
+        self,
+        mock: bool = False,
+        screen_ai: Optional[bool] = None,
+        screen_ai_interval_seconds: Optional[float] = None,
+    ) -> None:
         self._mock = mock
+        self._screen_ai_enabled = (
+            _env_truthy("TERPPET_SCREEN_AI", default=False)
+            if screen_ai is None
+            else screen_ai
+        )
+        self._screen_ai_interval_seconds = (
+            _env_float(
+                "TERPPET_SCREEN_AI_INTERVAL_SECONDS",
+                SCREEN_AI_DEFAULT_INTERVAL_S,
+                minimum=5.0,
+            )
+            if screen_ai_interval_seconds is None
+            else max(5.0, float(screen_ai_interval_seconds))
+        )
 
         self._snapshot_lock = threading.Lock()
         self._input_lock = threading.Lock()
         self._pomodoro_lock = threading.Lock()
+        self._screen_ai_lock = threading.Lock()
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -407,6 +587,11 @@ class ActivityTracker:
         self._mouse_listener = None
         self._listeners_active: bool = False
 
+        self._screen_ai_latest: Optional[ScreenAIReading] = None
+        self._screen_ai_inflight = False
+        self._screen_ai_next_due_monotonic = 0.0
+        self._screen_ai_last_error: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -422,9 +607,10 @@ class ActivityTracker:
         )
         self._thread.start()
         logger.info(
-            "ActivityTracker started (mock=%s, listeners=%s, platform=%s)",
+            "ActivityTracker started (mock=%s, listeners=%s, screen_ai=%s, platform=%s)",
             self._mock,
             self._listeners_active,
+            self._screen_ai_enabled,
             sys.platform,
         )
 
@@ -509,6 +695,7 @@ class ActivityTracker:
             state, app, title, url, seconds_since_input = self._mock_tick(now)
         else:
             state, app, title, url, seconds_since_input = self._live_tick(now)
+        ai_reading = self._get_applicable_screen_ai(now, app)
 
         if state == "FOCUSED":
             self._focus_seconds_today += dt
@@ -530,6 +717,11 @@ class ActivityTracker:
             window_switches_60s=len(self._switch_history),
             timestamp=now,
             mock=self._mock,
+            ai_screen_state=ai_reading.state if ai_reading is not None else None,
+            ai_screen_reason=ai_reading.reason if ai_reading is not None else None,
+            ai_screen_checked_at=(
+                ai_reading.checked_at if ai_reading is not None else None
+            ),
         )
         with self._snapshot_lock:
             self._snapshot = snapshot
@@ -559,6 +751,11 @@ class ActivityTracker:
         state = self._classify(
             app, title, url, seconds_since_input, len(self._switch_history)
         )
+        if state not in {"IDLE", "AWAY"}:
+            self._maybe_start_screen_ai_check(app, title)
+            ai_state = self._get_applicable_screen_ai(now, app)
+            if ai_state is not None:
+                state = ai_state.state
         return state, app, title, url, seconds_since_input
 
     def _classify(
@@ -584,6 +781,83 @@ class ActivityTracker:
         if haystack.strip():
             return "FOCUSED"
         return "IDLE"
+
+    def _maybe_start_screen_ai_check(
+        self,
+        app: Optional[str],
+        title: Optional[str],
+    ) -> None:
+        if self._mock or not self._screen_ai_enabled:
+            return
+        now_monotonic = time.monotonic()
+        with self._screen_ai_lock:
+            if self._screen_ai_inflight:
+                return
+            if now_monotonic < self._screen_ai_next_due_monotonic:
+                return
+            self._screen_ai_inflight = True
+            self._screen_ai_next_due_monotonic = (
+                now_monotonic + self._screen_ai_interval_seconds
+            )
+
+        worker = threading.Thread(
+            target=self._run_screen_ai_check,
+            args=(app, title),
+            name="terppet-screen-ai",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_screen_ai_check(
+        self,
+        app: Optional[str],
+        title: Optional[str],
+    ) -> None:
+        try:
+            image_bytes = _capture_screen_jpeg_bytes()
+            reading = _classify_screen_with_gemini(image_bytes, app, title)
+            with self._screen_ai_lock:
+                self._screen_ai_latest = reading
+                self._screen_ai_last_error = None
+        except Exception as exc:
+            with self._screen_ai_lock:
+                self._screen_ai_last_error = str(exc)
+            logger.info("Screen AI classification skipped/failed: %s", exc)
+        finally:
+            with self._screen_ai_lock:
+                self._screen_ai_inflight = False
+
+    def _get_applicable_screen_ai(
+        self,
+        now: datetime,
+        app: Optional[str],
+    ) -> Optional[ScreenAIReading]:
+        if not self._screen_ai_enabled:
+            return None
+        with self._screen_ai_lock:
+            reading = self._screen_ai_latest
+        if reading is None:
+            return None
+        age = (now - reading.checked_at).total_seconds()
+        if age < 0 or age > SCREEN_AI_MAX_STALENESS_S:
+            return None
+        if reading.source_app and app and reading.source_app != app:
+            return None
+        return reading
+
+    def screen_ai_status(self) -> dict[str, object]:
+        with self._screen_ai_lock:
+            latest = self._screen_ai_latest
+            return {
+                "enabled": self._screen_ai_enabled,
+                "interval_seconds": self._screen_ai_interval_seconds,
+                "inflight": self._screen_ai_inflight,
+                "last_error": self._screen_ai_last_error,
+                "latest_state": latest.state if latest else None,
+                "latest_reason": latest.reason if latest else None,
+                "latest_confidence": latest.confidence if latest else None,
+                "latest_checked_at": latest.checked_at if latest else None,
+            }
 
     def _mock_tick(
         self, now: datetime
@@ -717,21 +991,37 @@ _tracker: Optional[ActivityTracker] = None
 _singleton_lock = threading.Lock()
 
 
-def _get_or_create(mock: bool = False) -> ActivityTracker:
+def _get_or_create(
+    mock: bool = False,
+    screen_ai: Optional[bool] = None,
+    screen_ai_interval_seconds: Optional[float] = None,
+) -> ActivityTracker:
     global _tracker
     with _singleton_lock:
         if _tracker is None:
-            _tracker = ActivityTracker(mock=mock)
+            _tracker = ActivityTracker(
+                mock=mock,
+                screen_ai=screen_ai,
+                screen_ai_interval_seconds=screen_ai_interval_seconds,
+            )
     return _tracker
 
 
-def start_tracking(mock: bool = False) -> None:
+def start_tracking(
+    mock: bool = False,
+    screen_ai: Optional[bool] = None,
+    screen_ai_interval_seconds: Optional[float] = None,
+) -> None:
     """Start the activity tracker. Idempotent.
 
-    The first call decides ``mock``; subsequent calls re-use the existing
-    tracker. Call :func:`stop_tracking` first to swap modes.
+    The first call decides ``mock`` / screen AI options; subsequent calls re-use
+    the existing tracker. Call :func:`stop_tracking` first to swap modes.
     """
-    tracker = _get_or_create(mock=mock)
+    tracker = _get_or_create(
+        mock=mock,
+        screen_ai=screen_ai,
+        screen_ai_interval_seconds=screen_ai_interval_seconds,
+    )
     tracker.start()
 
 
@@ -781,11 +1071,60 @@ def pomodoro_status() -> PomodoroState:
     return _get_or_create().pomodoro_status()
 
 
+def start_pomodoro(minutes: int) -> Tuple[datetime, datetime]:
+    """Compatibility wrapper used by main.py routes."""
+    state = pomodoro_start(minutes)
+    if state.started_at is None or state.ends_at is None:
+        raise RuntimeError("Pomodoro failed to start")
+    return state.started_at, state.ends_at
+
+
+def stop_pomodoro() -> PomodoroState:
+    """Compatibility wrapper used by main.py routes."""
+    return pomodoro_stop()
+
+
+def pomodoro_state() -> object:
+    """Compatibility wrapper returning the wire schema when available."""
+    state = pomodoro_status()
+    try:
+        from .schemas import PomodoroState as WirePomodoroState
+
+        return WirePomodoroState(
+            running=state.running,
+            ends_at=state.ends_at,
+            minutes=state.minutes or 25,
+        )
+    except Exception:
+        return state
+
+
 def drain_pomodoro_events() -> List[PomodoroCompletedEvent]:
     tracker = _tracker
     if tracker is None:
         return []
     return tracker.drain_pomodoro_events()
+
+
+def drain_completed_pomodoros() -> int:
+    """Compatibility wrapper used by state.py."""
+    return len(drain_pomodoro_events())
+
+
+def screen_ai_status() -> dict[str, object]:
+    tracker = _tracker
+    if tracker is None:
+        return {
+            "enabled": False,
+            "interval_seconds": SCREEN_AI_DEFAULT_INTERVAL_S,
+            "inflight": False,
+            "last_error": None,
+            "latest_state": None,
+            "latest_reason": None,
+            "latest_confidence": None,
+            "latest_checked_at": None,
+        }
+    return tracker.screen_ai_status()
 
 
 # ---------------------------------------------------------------------------

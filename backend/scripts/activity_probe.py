@@ -66,6 +66,8 @@ What to try while this runs:
 2. Distracting window test:
    - Open YouTube, Reddit, Instagram, TikTok, Netflix, Twitch, X/Twitter, etc.
    - Expected: state becomes DISTRACTED, distraction_streak increases.
+   - If window title is unavailable, rerun with --screen-ai so Gemini can look
+     at a screenshot every 10 seconds and classify the visible page.
 
 3. Multitasking test:
    - Rapidly Cmd-Tab between 5+ different windows within ~60 seconds.
@@ -119,6 +121,11 @@ def _print_permission_hint() -> None:
 
 def _format_row(snapshot: Any) -> str:
     badge = STATE_BADGES.get(snapshot.state, "????")
+    ai_state = getattr(snapshot, "ai_screen_state", None)
+    ai_reason = getattr(snapshot, "ai_screen_reason", None)
+    ai_part = ""
+    if ai_state:
+        ai_part = f" ai={ai_state}:{_short(ai_reason, 24).strip()}"
     return (
         f"{time.strftime('%H:%M:%S')} "
         f"{badge} "
@@ -130,6 +137,7 @@ def _format_row(snapshot: Any) -> str:
         f"switches_60s={snapshot.window_switches_60s:2d} "
         f"focus_today={snapshot.focus_seconds_today:7.1f} "
         f"streak={snapshot.distraction_streak_seconds:6.1f}"
+        f"{ai_part}"
     )
 
 
@@ -144,9 +152,20 @@ def run(
     interval: float,
     only_changes: bool,
     debug_sensors: bool,
+    screen_ai: bool,
+    ai_interval: float,
 ) -> int:
-    activity.start_tracking(mock=False)
+    activity.start_tracking(
+        mock=False,
+        screen_ai=screen_ai,
+        screen_ai_interval_seconds=ai_interval,
+    )
     _print_permission_hint()
+    if screen_ai:
+        print(
+            "Screen AI: enabled. A screenshot is sent to Gemini at most every "
+            f"{ai_interval:.0f}s. Screenshots are temporary and deleted immediately.\n"
+        )
 
     print(
         "Legend: OK=FOCUSED, WARN=DISTRACTED, SWAP=MULTITASKING, "
@@ -170,6 +189,7 @@ def run(
             if not only_changes or signature != last_signature:
                 print(_format_row(snapshot), flush=True)
                 if debug_sensors:
+                    status = activity.screen_ai_status()
                     try:
                         app_name, title = activity._get_active_window()  # type: ignore[attr-defined]
                     except Exception as exc:  # pragma: no cover - diagnostic path
@@ -178,6 +198,16 @@ def run(
                         print(
                             f"    raw_sensor app={app_name or '-'} "
                             f"title={_short(title, 70)}",
+                            flush=True,
+                        )
+                    if screen_ai:
+                        print(
+                            "    screen_ai "
+                            f"enabled={status.get('enabled')} "
+                            f"inflight={status.get('inflight')} "
+                            f"latest={status.get('latest_state')} "
+                            f"reason={_short(status.get('latest_reason'), 50).strip()} "
+                            f"err={_short(status.get('last_error'), 60).strip()}",
                             flush=True,
                         )
                 last_signature = signature
@@ -220,22 +250,49 @@ def main() -> int:
         action="store_true",
         help="Also print direct active-window sensor readings.",
     )
+    parser.add_argument(
+        "--screen-ai",
+        action="store_true",
+        help="Enable Gemini screenshot classification for ambiguous screens.",
+    )
+    parser.add_argument(
+        "--ai-interval",
+        type=float,
+        default=10.0,
+        help="Seconds between Gemini screenshot classifications (min 5, default 10).",
+    )
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, lambda _signum, _frame: raise_keyboard_interrupt())
     _print_instructions()
 
     if args.jsonish_once:
-        activity.start_tracking(mock=False)
+        activity.start_tracking(
+            mock=False,
+            screen_ai=args.screen_ai,
+            screen_ai_interval_seconds=args.ai_interval,
+        )
         try:
-            time.sleep(max(1.0, args.interval))
+            wait = max(1.0, args.interval)
+            if args.screen_ai:
+                wait = max(wait, min(12.0, args.ai_interval + 2.0))
+            time.sleep(wait)
             _dump_jsonish(activity.current_state())
+            if args.screen_ai:
+                print(activity.screen_ai_status())
         finally:
             activity.stop_tracking()
         return 0
 
     try:
-        return run(args.duration, args.interval, args.only_changes, args.debug_sensors)
+        return run(
+            args.duration,
+            args.interval,
+            args.only_changes,
+            args.debug_sensors,
+            args.screen_ai,
+            args.ai_interval,
+        )
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
