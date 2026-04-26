@@ -66,8 +66,7 @@ function App(): React.JSX.Element {
     // it would otherwise eat clicks meant for whatever the user has under it
     // (terminal, browser, etc.). Pass-through is on by default; we only flip
     // it off when the cursor is over actual interactive UI.
-    const INTERACTIVE_SELECTOR =
-      '.pet, .panel, .panel-wrap, .connection-pill, .orb-menu, button, input'
+    const INTERACTIVE_SELECTOR = '.pet, .panel, .panel-wrap, .orb-menu, button, input'
     let passthrough = true
 
     const send = (nextPassthrough: boolean): void => {
@@ -94,22 +93,8 @@ function App(): React.JSX.Element {
     }
   }, [])
 
-  const pillLabel =
-    connectionStatus === 'open'
-      ? lastFrameAt
-        ? `live · ${Math.max(0, Math.round((Date.now() - lastFrameAt) / 1000))}s ago`
-        : 'live'
-      : connectionStatus
-
   return (
     <main className="app-shell">
-      <div
-        className={`connection-pill connection-pill--${connectionStatus}`}
-        title={`WebSocket: ${connectionStatus}`}
-      >
-        <span />
-        {pillLabel}
-      </div>
       <AnimatePresence mode="wait">
         {activePanel && (
           <motion.div
