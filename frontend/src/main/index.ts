@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, screen } from 'electron'
+import { app, shell, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -37,7 +37,16 @@ function createWindow(): void {
     mainWindow.setAlwaysOnTop(true, 'screen-saver')
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     mainWindow.setFullScreenable(false)
+    // Click-through by default; renderer toggles it off when the cursor is
+    // over interactive UI (pet, panels, orb menu, connection pill, buttons).
+    mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
+  })
+
+  ipcMain.on('pet:set-mouse-passthrough', (_event, ignore: boolean) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -74,6 +83,22 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // Emergency escape hatches: OS-level shortcuts that always work even if the
+  // overlay is mis-configured and capturing all mouse events. Without these,
+  // a stuck pet window can lock the screen.
+  //   Cmd+Shift+Q -> kill the pet entirely
+  //   Cmd+Shift+P -> force the overlay back into click-through mode
+  globalShortcut.register('CommandOrControl+Shift+Q', () => {
+    app.quit()
+  })
+  globalShortcut.register('CommandOrControl+Shift+P', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.setIgnoreMouseEvents(true, { forward: true })
+      }
+    }
+  })
+
   createWindow()
 
   app.on('activate', function () {
@@ -90,6 +115,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
 
 // In this file you can include the rest of your app's specific main process

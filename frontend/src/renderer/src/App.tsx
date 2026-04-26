@@ -21,6 +21,39 @@ function App(): React.JSX.Element {
     return socket.close
   }, [applyFrame, setConnectionStatus])
 
+  useEffect(() => {
+    // The Electron window spans the full screen width and is transparent, so
+    // it would otherwise eat clicks meant for whatever the user has under it
+    // (terminal, browser, etc.). Pass-through is on by default; we only flip
+    // it off when the cursor is over actual interactive UI.
+    const INTERACTIVE_SELECTOR =
+      '.pet, .panel, .panel-wrap, .connection-pill, .orb-menu, button, input'
+    let passthrough = true
+
+    const send = (nextPassthrough: boolean): void => {
+      if (nextPassthrough === passthrough) return
+      passthrough = nextPassthrough
+      try {
+        window.electron?.ipcRenderer.send('pet:set-mouse-passthrough', nextPassthrough)
+      } catch {
+        // preload not available (e.g. browser preview); ignore
+      }
+    }
+
+    send(true)
+
+    const handleMouseMove = (event: MouseEvent): void => {
+      const target = document.elementFromPoint(event.clientX, event.clientY)
+      const hit = target?.closest(INTERACTIVE_SELECTOR) ?? null
+      send(hit === null)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+    }
+  }, [])
+
   return (
     <main className="app-shell">
       <div className={`connection-pill connection-pill--${connectionStatus}`}>
