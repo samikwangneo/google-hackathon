@@ -16,6 +16,7 @@ from .schemas import (
     BehaviorState,
     BehaviorUpdate,
     PetMood,
+    PomodoroState as SchemaPomodoroState,
     PresenceState,
 )
 
@@ -96,8 +97,13 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
 
     presence_snap = vision.current_presence()
     activity_snap = activity.current_state()
-    pomodoro = activity.pomodoro_state()
-    completions = activity.drain_completed_pomodoros()
+    pomodoro_raw = activity.pomodoro_status()
+    completions = len(activity.drain_pomodoro_events())
+    pomodoro = SchemaPomodoroState(
+        running=pomodoro_raw.running,
+        ends_at=pomodoro_raw.ends_at,
+        minutes=pomodoro_raw.minutes,
+    )
 
     with _lock:
         # Drain pomodoro completions → XP + events
@@ -125,7 +131,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
         # EVOLVED mood lasts exactly one frame
         mood = _pet_mood(
             activity_snap.state,
-            presence_snap.presence,
+            presence_snap.state,
             pomodoro.running,
             evolved_this_tick or _just_evolved,
         )
@@ -133,11 +139,11 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
 
         return BehaviorUpdate(
             state=activity_snap.state,
-            presence=presence_snap.presence,
+            presence=presence_snap.state,
             pet_mood=mood,
             active_window=activity_snap.active_window,
             focus_seconds=_focus_seconds,
-            distraction_streak=activity_snap.distraction_streak,
+            distraction_streak=int(activity_snap.distraction_streak_seconds),
             xp=_xp,
             level=_level,
             pomodoro=pomodoro,
