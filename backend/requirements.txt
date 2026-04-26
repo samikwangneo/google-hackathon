@@ -1,0 +1,28 @@
+# TerpPet backend — Python 3.12 is the canonical target interpreter.
+#
+# Why 3.12:
+#   - mediapipe ships reliable cp312 wheels across all platforms we care about.
+#   - All pinned versions below have been verified to resolve cleanly against
+#     cp312 on macOS arm64; pywin32 is Windows-only and pyobjc is darwin-only.
+#
+# Versions are pinned to exact known-good builds so every team member gets
+# a reproducible env. Bump deliberately, not accidentally.
+
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+pydantic==2.13.3
+python-dotenv==1.2.2
+google-genai==1.73.1
+opencv-python==4.10.0.84
+mediapipe==0.10.33
+pynput==1.8.1
+psutil==7.2.2
+
+# Active-window adapter on macOS (NSWorkspace + Quartz)
+pyobjc-framework-Quartz==12.1; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.1;  sys_platform == "darwin"
+
+# Active-window adapter on Windows. PyGetWindow is Windows-only at runtime
+# (it raises NotImplementedError on macOS/Linux), so we don't install it there.
+pygetwindow==0.0.9; sys_platform == "win32"
+pywin32>=306;       sys_platform == "win32"

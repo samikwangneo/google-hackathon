@@ -1,0 +1,789 @@
+"""TerpPet — Screen & Activity tracking module (Person C).
+
+Owns:
+    * Active-window/title polling (cross-platform, Mac-first)
+    * Keyboard / mouse idle tracking via pynput (no key logging)
+    * Behavior classification: FOCUSED / DISTRACTED / IDLE / MULTITASKING / AWAY
+    * Pomodoro engine (lives here because completion is tied to focus tracking)
+    * ``--mock-activity`` mode that cycles scripted states for the demo
+
+Public surface (consumed by ``app.state`` and ``app.main``):
+    * ``start_tracking(mock: bool = False) -> None``
+    * ``stop_tracking() -> None``
+    * ``current_state() -> ActivitySnapshot``
+    * ``pomodoro_start(minutes: int) -> PomodoroState``
+    * ``pomodoro_stop() -> PomodoroState``
+    * ``pomodoro_status() -> PomodoroState``
+    * ``drain_pomodoro_events() -> list[PomodoroCompletedEvent]``
+
+Hard rules:
+    * Never log key contents, only timestamps of events.
+    * The polling loop never raises; sensor failures degrade quietly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import re
+import sys
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
+from queue import Empty, Queue
+from typing import Deque, List, Literal, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+BehaviorState = Literal["FOCUSED", "DISTRACTED", "IDLE", "MULTITASKING", "AWAY"]
+
+
+@dataclass(frozen=True)
+class ActivitySnapshot:
+    """One tick of derived activity signal. Frozen so callers can't mutate it."""
+
+    state: BehaviorState
+    active_app: Optional[str]
+    active_window: Optional[str]
+    active_url: Optional[str]
+    seconds_since_input: float
+    focus_seconds_today: float
+    distraction_streak_seconds: float
+    window_switches_60s: int
+    timestamp: datetime
+    mock: bool
+
+
+@dataclass(frozen=True)
+class PomodoroState:
+    running: bool
+    minutes: int
+    started_at: Optional[datetime]
+    ends_at: Optional[datetime]
+    seconds_remaining: float
+
+
+@dataclass(frozen=True)
+class PomodoroCompletedEvent:
+    completed_at: datetime
+    minutes: int
+
+
+# ---------------------------------------------------------------------------
+# Tunable constants
+# ---------------------------------------------------------------------------
+
+POLL_INTERVAL_S: float = 1.0
+IDLE_THRESHOLD_S: float = 30.0
+AWAY_THRESHOLD_S: float = 120.0
+SWITCH_WINDOW_S: float = 60.0
+MULTITASKING_SWITCH_THRESHOLD: int = 5  # >= N switches within SWITCH_WINDOW_S
+POMODORO_MIN_MINUTES: int = 1
+POMODORO_MAX_MINUTES: int = 180
+
+# Substring patterns matched against ``app + title + url`` (lowercased).
+DISTRACTION_PATTERNS: Tuple[str, ...] = (
+    "youtube", "youtu.be",
+    "twitter", "x.com",
+    "reddit", "instagram",
+    "tiktok", "facebook",
+    "netflix", "twitch",
+    "9gag", "pinterest", "tumblr",
+    "disney+", "hulu",
+)
+
+FOCUS_PATTERNS: Tuple[str, ...] = (
+    "code", "cursor", "intellij", "pycharm", "webstorm", "datagrip",
+    "xcode", "sublime", "vim", "neovim", "emacs",
+    "terminal", "iterm", "warp", "hyper",
+    "notion", "obsidian", "bear", "logseq",
+    "docs.google", "overleaf", "onenote",
+    "github.com", "gitlab.com", "stackoverflow",
+    "chatgpt", "claude.ai", "gemini.google",
+    "umd.edu", "canvas", "kaltura", "elms",
+    "figma", "linear",
+)
+
+# Domains we look for in window titles for the URL hint.
+_URL_DOMAINS: Tuple[str, ...] = (
+    "youtube.com", "youtu.be",
+    "x.com", "twitter.com",
+    "reddit.com", "instagram.com", "tiktok.com",
+    "facebook.com", "netflix.com", "twitch.tv",
+    "9gag.com", "pinterest.com", "tumblr.com",
+    "github.com", "gitlab.com", "stackoverflow.com",
+    "docs.google.com", "drive.google.com",
+    "chatgpt.com", "claude.ai", "gemini.google.com",
+    "umd.edu", "canvas.umd.edu",
+    "wikipedia.org",
+)
+
+_URL_REGEX = re.compile(
+    r"(" + r"|".join(re.escape(d) for d in _URL_DOMAINS) + r")",
+    re.IGNORECASE,
+)
+
+# Mock cycle for the --mock-activity demo: (state, duration_seconds).
+_MOCK_CYCLE: Tuple[Tuple[BehaviorState, float], ...] = (
+    ("FOCUSED", 8.0),
+    ("DISTRACTED", 6.0),
+    ("MULTITASKING", 4.0),
+    ("IDLE", 4.0),
+    ("AWAY", 4.0),
+)
+
+
+# ---------------------------------------------------------------------------
+# Active-window adapter — defensive imports, never raises into the polling loop
+# ---------------------------------------------------------------------------
+
+
+def _get_active_window_macos() -> Tuple[Optional[str], Optional[str]]:
+    """Return (app_name, window_title) on macOS via NSWorkspace + Quartz.
+
+    Window titles require Screen Recording permission on modern macOS; if that
+    is not granted we still return the app name and ``None`` for the title.
+    """
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+        import Quartz  # type: ignore
+    except Exception as exc:
+        logger.debug("macOS active-window deps unavailable: %s", exc)
+        return None, None
+
+    app_name: Optional[str] = None
+    title: Optional[str] = None
+    front_pid: int = -1
+
+    try:
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if front is not None:
+            localized = front.localizedName()
+            app_name = str(localized) if localized else None
+            front_pid = int(front.processIdentifier())
+    except Exception as exc:
+        logger.debug("NSWorkspace frontmost lookup failed: %s", exc)
+
+    try:
+        options = (
+            Quartz.kCGWindowListOptionOnScreenOnly
+            | Quartz.kCGWindowListExcludeDesktopElements
+        )
+        windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []
+        for w in windows:
+            try:
+                if int(w.get("kCGWindowLayer", 1)) != 0:
+                    continue
+                if front_pid >= 0 and int(w.get("kCGWindowOwnerPID", -1)) != front_pid:
+                    continue
+                name = w.get("kCGWindowName")
+                if name:
+                    title = str(name)
+                    break
+            except Exception:
+                continue
+        if app_name is None:
+            for w in windows:
+                try:
+                    if front_pid >= 0 and int(w.get("kCGWindowOwnerPID", -1)) == front_pid:
+                        owner = w.get("kCGWindowOwnerName")
+                        if owner:
+                            app_name = str(owner)
+                            break
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.debug("Quartz CGWindowListCopyWindowInfo failed: %s", exc)
+
+    return app_name, title
+
+
+def _get_active_window_windows() -> Tuple[Optional[str], Optional[str]]:
+    """Return (app_name, window_title) on Windows via pygetwindow + pywin32."""
+    app_name: Optional[str] = None
+    title: Optional[str] = None
+
+    try:
+        import pygetwindow  # type: ignore
+
+        win = pygetwindow.getActiveWindow()
+        if win is not None and getattr(win, "title", None):
+            title = str(win.title)
+    except Exception as exc:
+        logger.debug("pygetwindow lookup failed: %s", exc)
+
+    try:
+        import psutil  # type: ignore
+        import win32gui  # type: ignore
+        import win32process  # type: ignore
+
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid:
+                app_name = psutil.Process(int(pid)).name()
+            if title is None:
+                txt = win32gui.GetWindowText(hwnd)
+                if txt:
+                    title = str(txt)
+    except Exception as exc:
+        logger.debug("win32 active-process lookup failed: %s", exc)
+
+    return app_name, title
+
+
+def _get_active_window() -> Tuple[Optional[str], Optional[str]]:
+    """Return (app_name, window_title). Either component may be None."""
+    if sys.platform == "darwin":
+        return _get_active_window_macos()
+    if sys.platform == "win32":
+        return _get_active_window_windows()
+    return None, None
+
+
+def _extract_url_hint(title: Optional[str]) -> Optional[str]:
+    if not title:
+        return None
+    m = _URL_REGEX.search(title)
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
+# ---------------------------------------------------------------------------
+# Tracker
+# ---------------------------------------------------------------------------
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _local_today() -> date:
+    return datetime.now().astimezone().date()
+
+
+def _empty_pomodoro() -> PomodoroState:
+    return PomodoroState(
+        running=False,
+        minutes=0,
+        started_at=None,
+        ends_at=None,
+        seconds_remaining=0.0,
+    )
+
+
+class ActivityTracker:
+    """Owns the 1 Hz polling loop, the input listeners, and the Pomodoro timer.
+
+    The tracker is intentionally stateful and singleton-friendly: ``state.py``
+    consumes its public methods as if they were module-level functions (see the
+    delegating wrappers at the bottom of this file).
+    """
+
+    def __init__(self, mock: bool = False) -> None:
+        self._mock = mock
+
+        self._snapshot_lock = threading.Lock()
+        self._input_lock = threading.Lock()
+        self._pomodoro_lock = threading.Lock()
+
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        now = _utcnow()
+        self._last_input_at: datetime = now
+        self._snapshot: ActivitySnapshot = ActivitySnapshot(
+            state="IDLE",
+            active_app=None,
+            active_window=None,
+            active_url=None,
+            seconds_since_input=0.0,
+            focus_seconds_today=0.0,
+            distraction_streak_seconds=0.0,
+            window_switches_60s=0,
+            timestamp=now,
+            mock=mock,
+        )
+
+        self._focus_seconds_today: float = 0.0
+        self._distraction_streak_seconds: float = 0.0
+        self._focus_day: date = _local_today()
+
+        self._switch_history: Deque[datetime] = deque()
+        self._last_window_key: Optional[str] = None
+        self._last_tick_at: Optional[datetime] = None
+
+        self._pomodoro: PomodoroState = _empty_pomodoro()
+        self._events: "Queue[PomodoroCompletedEvent]" = Queue()
+
+        self._mock_started_at: Optional[datetime] = None
+
+        self._kbd_listener = None
+        self._mouse_listener = None
+        self._listeners_active: bool = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        if not self._mock:
+            self._start_input_listeners()
+        self._mock_started_at = _utcnow() if self._mock else None
+        self._thread = threading.Thread(
+            target=self._run, name="terppet-activity", daemon=True
+        )
+        self._thread.start()
+        logger.info(
+            "ActivityTracker started (mock=%s, listeners=%s, platform=%s)",
+            self._mock,
+            self._listeners_active,
+            sys.platform,
+        )
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=POLL_INTERVAL_S * 2)
+            self._thread = None
+        self._stop_input_listeners()
+        logger.info("ActivityTracker stopped")
+
+    def _start_input_listeners(self) -> None:
+        try:
+            from pynput import keyboard, mouse  # type: ignore
+        except Exception as exc:
+            logger.warning(
+                "pynput unavailable; treating user as always-active: %s", exc
+            )
+            return
+
+        def _bump(*_args, **_kwargs) -> None:
+            with self._input_lock:
+                self._last_input_at = _utcnow()
+
+        try:
+            self._kbd_listener = keyboard.Listener(on_press=_bump, on_release=_bump)
+            self._mouse_listener = mouse.Listener(
+                on_move=_bump, on_click=_bump, on_scroll=_bump
+            )
+            self._kbd_listener.daemon = True
+            self._mouse_listener.daemon = True
+            self._kbd_listener.start()
+            self._mouse_listener.start()
+            self._listeners_active = True
+        except Exception as exc:
+            logger.warning(
+                "Could not start pynput listeners (Accessibility permission?): %s. "
+                "Falling back to assuming user is active.",
+                exc,
+            )
+            self._kbd_listener = None
+            self._mouse_listener = None
+            self._listeners_active = False
+
+    def _stop_input_listeners(self) -> None:
+        for listener in (self._kbd_listener, self._mouse_listener):
+            if listener is None:
+                continue
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        self._kbd_listener = None
+        self._mouse_listener = None
+        self._listeners_active = False
+
+    # ------------------------------------------------------------------
+    # Polling loop
+    # ------------------------------------------------------------------
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            tick_started = time.monotonic()
+            try:
+                self._tick()
+            except Exception:
+                logger.exception("Activity tick failed; continuing")
+            elapsed = time.monotonic() - tick_started
+            self._stop_event.wait(max(0.0, POLL_INTERVAL_S - elapsed))
+
+    def _tick(self) -> None:
+        now = _utcnow()
+        last_tick = self._last_tick_at or now
+        dt = max(0.0, (now - last_tick).total_seconds())
+        self._last_tick_at = now
+
+        today = _local_today()
+        if today != self._focus_day:
+            self._focus_day = today
+            self._focus_seconds_today = 0.0
+
+        if self._mock:
+            state, app, title, url, seconds_since_input = self._mock_tick(now)
+        else:
+            state, app, title, url, seconds_since_input = self._live_tick(now)
+
+        if state == "FOCUSED":
+            self._focus_seconds_today += dt
+        if state == "DISTRACTED":
+            self._distraction_streak_seconds += dt
+        else:
+            self._distraction_streak_seconds = 0.0
+
+        self._poll_pomodoro(now)
+
+        snapshot = ActivitySnapshot(
+            state=state,
+            active_app=app,
+            active_window=title,
+            active_url=url,
+            seconds_since_input=seconds_since_input,
+            focus_seconds_today=self._focus_seconds_today,
+            distraction_streak_seconds=self._distraction_streak_seconds,
+            window_switches_60s=len(self._switch_history),
+            timestamp=now,
+            mock=self._mock,
+        )
+        with self._snapshot_lock:
+            self._snapshot = snapshot
+
+    def _live_tick(
+        self, now: datetime
+    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float]:
+        app, title = _get_active_window()
+        url = _extract_url_hint(title)
+
+        key = f"{app or ''}|{title or ''}"
+        if key != (self._last_window_key or "") and (app or title):
+            self._switch_history.append(now)
+            self._last_window_key = key
+        cutoff = now - timedelta(seconds=SWITCH_WINDOW_S)
+        while self._switch_history and self._switch_history[0] < cutoff:
+            self._switch_history.popleft()
+
+        with self._input_lock:
+            seconds_since_input = (now - self._last_input_at).total_seconds()
+
+        # When pynput could not start (no Accessibility perms), pretend the
+        # user is active so the demo keeps working without false IDLE/AWAY.
+        if not self._listeners_active:
+            seconds_since_input = 0.0
+
+        state = self._classify(
+            app, title, url, seconds_since_input, len(self._switch_history)
+        )
+        return state, app, title, url, seconds_since_input
+
+    def _classify(
+        self,
+        app: Optional[str],
+        title: Optional[str],
+        url: Optional[str],
+        seconds_since_input: float,
+        switches_in_window: int,
+    ) -> BehaviorState:
+        if seconds_since_input >= AWAY_THRESHOLD_S:
+            return "AWAY"
+        if seconds_since_input >= IDLE_THRESHOLD_S:
+            return "IDLE"
+
+        haystack = " ".join(filter(None, (app, title, url))).lower()
+        if any(p in haystack for p in DISTRACTION_PATTERNS):
+            return "DISTRACTED"
+        if switches_in_window >= MULTITASKING_SWITCH_THRESHOLD:
+            return "MULTITASKING"
+        if any(p in haystack for p in FOCUS_PATTERNS):
+            return "FOCUSED"
+        if haystack.strip():
+            return "FOCUSED"
+        return "IDLE"
+
+    def _mock_tick(
+        self, now: datetime
+    ) -> Tuple[BehaviorState, Optional[str], Optional[str], Optional[str], float]:
+        if self._mock_started_at is None:
+            self._mock_started_at = now
+        cycle_total = sum(d for _, d in _MOCK_CYCLE)
+        elapsed = (now - self._mock_started_at).total_seconds() % cycle_total
+
+        running = 0.0
+        chosen: BehaviorState = _MOCK_CYCLE[0][0]
+        for state, dur in _MOCK_CYCLE:
+            running += dur
+            if elapsed < running:
+                chosen = state
+                break
+
+        if chosen == "AWAY":
+            seconds_since_input = AWAY_THRESHOLD_S + 5.0
+        elif chosen == "IDLE":
+            seconds_since_input = IDLE_THRESHOLD_S + 5.0
+        else:
+            seconds_since_input = 0.5
+
+        scripted_app = {
+            "FOCUSED": "Cursor",
+            "DISTRACTED": "Google Chrome",
+            "MULTITASKING": "Slack",
+            "IDLE": None,
+            "AWAY": None,
+        }[chosen]
+        scripted_title = {
+            "FOCUSED": "activity.py — TerpPet — Cursor",
+            "DISTRACTED": "TikTok - Make Your Day",
+            "MULTITASKING": "Slack | TerpPet | UMD Hackers",
+            "IDLE": None,
+            "AWAY": None,
+        }[chosen]
+        url = _extract_url_hint(scripted_title)
+
+        # Maintain switch history so the snapshot still shows realistic counts.
+        if chosen != self._last_window_key:
+            self._switch_history.append(now)
+            self._last_window_key = chosen
+        cutoff = now - timedelta(seconds=SWITCH_WINDOW_S)
+        while self._switch_history and self._switch_history[0] < cutoff:
+            self._switch_history.popleft()
+
+        return chosen, scripted_app, scripted_title, url, seconds_since_input
+
+    # ------------------------------------------------------------------
+    # Pomodoro
+    # ------------------------------------------------------------------
+    def pomodoro_start(self, minutes: int) -> PomodoroState:
+        if not isinstance(minutes, int) or isinstance(minutes, bool):
+            raise ValueError("minutes must be an int")
+        if not (POMODORO_MIN_MINUTES <= minutes <= POMODORO_MAX_MINUTES):
+            raise ValueError(
+                f"minutes must be in [{POMODORO_MIN_MINUTES},{POMODORO_MAX_MINUTES}]"
+            )
+        now = _utcnow()
+        ends = now + timedelta(minutes=minutes)
+        with self._pomodoro_lock:
+            self._pomodoro = PomodoroState(
+                running=True,
+                minutes=minutes,
+                started_at=now,
+                ends_at=ends,
+                seconds_remaining=float(minutes) * 60.0,
+            )
+            return self._pomodoro
+
+    def pomodoro_stop(self) -> PomodoroState:
+        with self._pomodoro_lock:
+            self._pomodoro = _empty_pomodoro()
+            return self._pomodoro
+
+    def pomodoro_status(self) -> PomodoroState:
+        # Opportunistic completion check so callers still see completion events
+        # even when the polling thread is paused (e.g. unit tests).
+        self._poll_pomodoro(_utcnow())
+        with self._pomodoro_lock:
+            current = self._pomodoro
+            if current.running and current.ends_at is not None:
+                remaining = max(
+                    0.0, (current.ends_at - _utcnow()).total_seconds()
+                )
+                return replace(current, seconds_remaining=remaining)
+            return current
+
+    def _poll_pomodoro(self, now: datetime) -> None:
+        with self._pomodoro_lock:
+            current = self._pomodoro
+            if not current.running or current.ends_at is None:
+                return
+            if now >= current.ends_at:
+                completed_minutes = current.minutes
+                self._pomodoro = _empty_pomodoro()
+                self._events.put(
+                    PomodoroCompletedEvent(
+                        completed_at=now, minutes=completed_minutes
+                    )
+                )
+                logger.info("Pomodoro completed (%d min)", completed_minutes)
+            else:
+                remaining = max(0.0, (current.ends_at - now).total_seconds())
+                self._pomodoro = replace(current, seconds_remaining=remaining)
+
+    def drain_pomodoro_events(self) -> List[PomodoroCompletedEvent]:
+        events: List[PomodoroCompletedEvent] = []
+        while True:
+            try:
+                events.append(self._events.get_nowait())
+            except Empty:
+                break
+        return events
+
+    # ------------------------------------------------------------------
+    # Snapshot accessor
+    # ------------------------------------------------------------------
+    def current(self) -> ActivitySnapshot:
+        with self._snapshot_lock:
+            return self._snapshot
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton + public delegating API
+# ---------------------------------------------------------------------------
+
+_tracker: Optional[ActivityTracker] = None
+_singleton_lock = threading.Lock()
+
+
+def _get_or_create(mock: bool = False) -> ActivityTracker:
+    global _tracker
+    with _singleton_lock:
+        if _tracker is None:
+            _tracker = ActivityTracker(mock=mock)
+    return _tracker
+
+
+def start_tracking(mock: bool = False) -> None:
+    """Start the activity tracker. Idempotent.
+
+    The first call decides ``mock``; subsequent calls re-use the existing
+    tracker. Call :func:`stop_tracking` first to swap modes.
+    """
+    tracker = _get_or_create(mock=mock)
+    tracker.start()
+
+
+def stop_tracking() -> None:
+    """Stop the activity tracker and tear down listeners."""
+    global _tracker
+    with _singleton_lock:
+        existing = _tracker
+        _tracker = None
+    if existing is not None:
+        existing.stop()
+
+
+def current_state() -> ActivitySnapshot:
+    """Return the most recently computed ActivitySnapshot.
+
+    Always safe to call: if the tracker has not been started, returns an
+    idle placeholder snapshot rather than raising.
+    """
+    tracker = _tracker
+    if tracker is None:
+        now = _utcnow()
+        return ActivitySnapshot(
+            state="IDLE",
+            active_app=None,
+            active_window=None,
+            active_url=None,
+            seconds_since_input=0.0,
+            focus_seconds_today=0.0,
+            distraction_streak_seconds=0.0,
+            window_switches_60s=0,
+            timestamp=now,
+            mock=False,
+        )
+    return tracker.current()
+
+
+def pomodoro_start(minutes: int) -> PomodoroState:
+    return _get_or_create().pomodoro_start(minutes)
+
+
+def pomodoro_stop() -> PomodoroState:
+    return _get_or_create().pomodoro_stop()
+
+
+def pomodoro_status() -> PomodoroState:
+    return _get_or_create().pomodoro_status()
+
+
+def drain_pomodoro_events() -> List[PomodoroCompletedEvent]:
+    tracker = _tracker
+    if tracker is None:
+        return []
+    return tracker.drain_pomodoro_events()
+
+
+# ---------------------------------------------------------------------------
+# Self-test (``python -m app.activity [--mock-activity]``)
+# ---------------------------------------------------------------------------
+
+
+def _selftest(mock: bool, duration: float, demo_pomodoro_seconds: float = 5.0) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    start_tracking(mock=mock)
+    try:
+        # Force a short Pomodoro for the self-test by directly seeding the
+        # tracker (the public API floors at 1 minute, which is too long here).
+        tracker = _tracker
+        if tracker is not None:
+            now = _utcnow()
+            with tracker._pomodoro_lock:  # noqa: SLF001 — self-test only
+                tracker._pomodoro = PomodoroState(  # noqa: SLF001
+                    running=True,
+                    minutes=1,
+                    started_at=now,
+                    ends_at=now + timedelta(seconds=demo_pomodoro_seconds),
+                    seconds_remaining=demo_pomodoro_seconds,
+                )
+
+        end = time.monotonic() + duration
+        while time.monotonic() < end:
+            snap = current_state()
+            pomo = pomodoro_status()
+            evts = drain_pomodoro_events()
+            print(
+                f"[{snap.timestamp.isoformat(timespec='seconds')}] "
+                f"state={snap.state:<13} "
+                f"app={(snap.active_app or '-')[:18]:<18} "
+                f"url={(snap.active_url or '-')[:14]:<14} "
+                f"idle={snap.seconds_since_input:5.1f}s "
+                f"focus_today={snap.focus_seconds_today:5.1f}s "
+                f"streak={snap.distraction_streak_seconds:5.1f}s "
+                f"switches60s={snap.window_switches_60s} "
+                f"pomo={'RUN' if pomo.running else 'OFF'} "
+                f"remaining={pomo.seconds_remaining:5.1f}s "
+                f"events={len(evts)}"
+            )
+            for e in evts:
+                print(
+                    f"  -> POMODORO COMPLETED at {e.completed_at.isoformat()} "
+                    f"({e.minutes} min)"
+                )
+            time.sleep(1.0)
+    finally:
+        stop_tracking()
+    return 0
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(
+        description="TerpPet activity tracker self-test"
+    )
+    parser.add_argument(
+        "--mock-activity",
+        action="store_true",
+        help="Cycle scripted states without using sensors",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=20.0,
+        help="Seconds to run the self-test (default 20)",
+    )
+    args = parser.parse_args()
+    return _selftest(mock=args.mock_activity, duration=args.duration)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
