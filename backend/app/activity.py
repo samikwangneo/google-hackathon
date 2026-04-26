@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -146,10 +147,13 @@ _MOCK_CYCLE: Tuple[Tuple[BehaviorState, float], ...] = (
 
 
 def _get_active_window_macos() -> Tuple[Optional[str], Optional[str]]:
-    """Return (app_name, window_title) on macOS via NSWorkspace + Quartz.
+    """Return (app_name, window_title) on macOS via Quartz + NSWorkspace.
 
     Window titles require Screen Recording permission on modern macOS; if that
-    is not granted we still return the app name and ``None`` for the title.
+    is not granted we still try to return the app name and ``None`` for the
+    title. Quartz's front-to-back window order is treated as the primary app
+    signal because NSWorkspace can report Cursor when called from an integrated
+    terminal even while another app is visually frontmost.
     """
     try:
         from AppKit import NSWorkspace  # type: ignore
@@ -162,6 +166,36 @@ def _get_active_window_macos() -> Tuple[Optional[str], Optional[str]]:
     title: Optional[str] = None
     front_pid: int = -1
 
+    quartz_app: Optional[str] = None
+    quartz_title: Optional[str] = None
+    quartz_pid: int = -1
+
+    try:
+        options = (
+            Quartz.kCGWindowListOptionOnScreenOnly
+            | Quartz.kCGWindowListExcludeDesktopElements
+        )
+        windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []
+        for w in windows:
+            try:
+                if int(w.get("kCGWindowLayer", 1)) != 0:
+                    continue
+                owner = w.get("kCGWindowOwnerName")
+                # Ignore invisible/system windows that can sit before the real app.
+                bounds = w.get("kCGWindowBounds") or {}
+                if float(bounds.get("Width", 0)) <= 1 or float(bounds.get("Height", 0)) <= 1:
+                    continue
+                if owner:
+                    quartz_app = str(owner)
+                    quartz_pid = int(w.get("kCGWindowOwnerPID", -1))
+                    name = w.get("kCGWindowName")
+                    quartz_title = str(name) if name else None
+                    break
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("Quartz top-window lookup failed: %s", exc)
+
     try:
         front = NSWorkspace.sharedWorkspace().frontmostApplication()
         if front is not None:
@@ -170,6 +204,18 @@ def _get_active_window_macos() -> Tuple[Optional[str], Optional[str]]:
             front_pid = int(front.processIdentifier())
     except Exception as exc:
         logger.debug("NSWorkspace frontmost lookup failed: %s", exc)
+
+    # Prefer the actual topmost window owner when Quartz and NSWorkspace differ.
+    if quartz_app:
+        if app_name and app_name != quartz_app:
+            logger.debug(
+                "NSWorkspace frontmost app %r differed from Quartz top window %r; using Quartz",
+                app_name,
+                quartz_app,
+            )
+        app_name = quartz_app
+        title = quartz_title
+        front_pid = quartz_pid
 
     try:
         options = (
@@ -202,7 +248,38 @@ def _get_active_window_macos() -> Tuple[Optional[str], Optional[str]]:
     except Exception as exc:
         logger.debug("Quartz CGWindowListCopyWindowInfo failed: %s", exc)
 
+    if app_name is None:
+        app_name = _get_frontmost_app_macos_applescript()
+
     return app_name, title
+
+
+def _get_frontmost_app_macos_applescript() -> Optional[str]:
+    """Last-resort macOS frontmost app name via System Events.
+
+    This may require Accessibility permission and is intentionally only a
+    fallback, not the hot path.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to get name of first application process whose frontmost is true',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=0.75,
+        )
+    except Exception as exc:
+        logger.debug("AppleScript frontmost lookup failed: %s", exc)
+        return None
+    if proc.returncode != 0:
+        logger.debug("AppleScript frontmost lookup returned %s: %s", proc.returncode, proc.stderr)
+        return None
+    app = proc.stdout.strip()
+    return app or None
 
 
 def _get_active_window_windows() -> Tuple[Optional[str], Optional[str]]:
@@ -472,7 +549,7 @@ class ActivityTracker:
             self._switch_history.popleft()
 
         with self._input_lock:
-            seconds_since_input = (now - self._last_input_at).total_seconds()
+            seconds_since_input = max(0.0, (now - self._last_input_at).total_seconds())
 
         # When pynput could not start (no Accessibility perms), pretend the
         # user is active so the demo keeps working without false IDLE/AWAY.
