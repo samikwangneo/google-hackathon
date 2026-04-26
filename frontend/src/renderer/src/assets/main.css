@@ -289,17 +289,20 @@ button {
 
 .orb-menu {
   position: absolute;
+  /* Centered on `.pet` (128×128, right: 28px, bottom: 26px): box center at +92/+90 from edges → 20×20 anchor at 82/80 */
   right: 82px;
   bottom: 80px;
   z-index: 3;
   width: 20px;
   height: 20px;
+  pointer-events: none;
 }
 
 .orb-menu__item {
   position: absolute;
   display: flex;
   overflow: hidden;
+  pointer-events: auto;
   width: 82px;
   height: 82px;
   flex-direction: column;
@@ -390,10 +393,11 @@ button {
 .panel-wrap {
   position: absolute;
   right: 28px;
-  bottom: 292px;
+  /* Above tallest orb (~334px from bottom) + margin */
+  bottom: 352px;
   z-index: 6;
   width: 330px;
-  max-height: calc(100vh - 332px);
+  max-height: calc(100vh - 392px);
 }
 
 .panel {
@@ -731,11 +735,105 @@ button {
   white-space: nowrap;
 }
 
+.umd-panel {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-height: min(560px, calc(100vh - 392px));
+  padding-right: 18px;
+}
+
+.umd-panel h2 {
+  margin-bottom: 12px;
+}
+
+.umd-panel__content {
+  display: grid;
+  overflow-y: auto;
+  gap: 15px;
+  min-height: 0;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.umd-panel__content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.umd-panel__content::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 245, 214, 0.18);
+}
+
+.umd-panel__section {
+  display: grid;
+  gap: 8px;
+}
+
+.umd-panel__section h3 {
+  margin: 0;
+  color: var(--terp-gold);
+  font-size: 12px;
+  font-weight: 1000;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.umd-panel__list {
+  display: grid;
+  gap: 8px;
+}
+
+.umd-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 245, 214, 0.14);
+  border-radius: 17px;
+  background:
+    linear-gradient(135deg, rgba(255, 213, 74, 0.1), transparent 42%),
+    rgba(255, 245, 214, 0.08);
+}
+
+.umd-card--dining {
+  background:
+    linear-gradient(135deg, rgba(216, 30, 63, 0.18), transparent 42%),
+    rgba(255, 245, 214, 0.08);
+}
+
+.umd-card strong {
+  overflow: hidden;
+  color: #fff9e8;
+  font-size: 14px;
+  font-weight: 950;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.umd-card span {
+  color: rgba(255, 245, 214, 0.76);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.umd-card small {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: rgba(255, 213, 74, 0.14);
+  color: var(--terp-gold);
+  font-size: 10px;
+  font-weight: 1000;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .brain-panel {
   display: flex;
   flex-direction: column;
   width: 320px;
-  max-height: min(640px, calc(100vh - 332px));
+  max-height: min(600px, calc(100vh - 392px));
   padding-top: 44px;
   padding-right: 44px;
   gap: 10px;

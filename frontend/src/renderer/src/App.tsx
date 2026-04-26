@@ -7,6 +7,7 @@ import { OrbMenu } from './components/OrbMenu'
 import { Pet } from './components/Pet'
 import { PomodoroPanel } from './components/PomodoroPanel'
 import { StatsPanel } from './components/StatsPanel'
+import { UmdPanel } from './components/UmdPanel'
 import { connectBehaviorSocket } from './lib/ws'
 import { useTerpPetStore } from './store'
 
@@ -172,6 +173,7 @@ function App(): React.JSX.Element {
                 </div>
               </section>
             )}
+            {activePanel === 'umd' && <UmdPanel />}
             {activePanel === 'brain' && <BrainPanel />}
           </motion.div>
         )}
