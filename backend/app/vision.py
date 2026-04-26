@@ -55,14 +55,17 @@ _CAMERA_INDEX_ENV = "VISION_CAMERA_INDEX"
 _DEFAULT_MAC_CAMERA_INDEX = 1
 
 _PHONE_COCO_CLASS = 67          # "cell phone" in COCO
-_PHONE_CONF_THRESHOLD = 0.5
-_PHONE_CHECK_EVERY_N = 2        # run YOLO every Nth capture frame
-_PHONE_BUFFER_SIZE = 4          # smoothing window for phone signal
+_PHONE_CONF_THRESHOLD = 0.30
+_PHONE_CHECK_EVERY_N = 1        # run YOLO every Nth capture frame
+_PHONE_BUFFER_SIZE = 8          # rolling window for hysteresis
+_PHONE_ENTER_HITS = 2           # >= this many hits in window: False -> True
+_PHONE_EXIT_MISSES = 8          # full window of misses needed: True -> False
 
 _lock = threading.Lock()
 _latest: PresenceSnapshot | None = None
 _thread: threading.Thread | None = None
 _stop = threading.Event()
+_first_frame = threading.Event()  # set once the capture loop publishes its first real snapshot
 _cap: "cv2.VideoCapture | None" = None
 _detector: "Detector | None" = None
 _backend_name: str = "none"
@@ -101,19 +104,25 @@ def start() -> None:
     _phone_model = _try_yolo()
 
     _stop.clear()
+    _first_frame.clear()
     _thread = threading.Thread(target=_capture_loop, name="vision", daemon=True)
     _thread.start()
 
+    # Wait briefly for the first real snapshot so callers don't see the
+    # placeholder ABSENT/none/0/0 frames during camera + detector warmup.
+    if not _first_frame.wait(timeout=10.0):
+        log.warning("vision: first frame not produced within 10s; serving placeholders")
+
 
 def _try_yolo() -> object | None:
-    """Load YOLOv8n for phone detection. None if ultralytics not installed or load fails."""
+    """Load YOLOv8s for phone detection. None if ultralytics not installed or load fails."""
     if YOLO is None:
         log.info("vision: ultralytics not installed; phone detection disabled")
         return None
     try:
-        log.info("vision: loading YOLOv8n for phone detection (downloads ~6MB on first run)...")
-        model = YOLO("yolov8n.pt")
-        log.info("vision: YOLOv8n ready")
+        log.info("vision: loading YOLOv8s for phone detection (downloads ~22MB on first run)...")
+        model = YOLO("yolov8s.pt")
+        log.info("vision: YOLOv8s ready")
         return model
     except Exception as e:
         log.warning("vision: YOLO init failed (%s); phone detection disabled", e)
@@ -160,6 +169,7 @@ def _capture_loop() -> None:
     readings: deque[PresenceState] = deque(maxlen=_BUFFER_SIZE)
     confidences: deque[float] = deque(maxlen=_BUFFER_SIZE)
     phone_buffer: deque[bool] = deque(maxlen=_PHONE_BUFFER_SIZE)
+    phone_smoothed: bool = False
     period = 1.0 / _TARGET_FPS
     last_tick = time.time()
     fps_smoothed = 0.0
@@ -206,8 +216,16 @@ def _capture_loop() -> None:
                 phone_now = phone_buffer[-1] if phone_buffer else False
             phone_buffer.append(phone_now)
 
-        # Majority vote so a single false positive doesn't flip the pet
-        phone_smoothed = bool(phone_buffer) and sum(phone_buffer) > len(phone_buffer) / 2
+        # Asymmetric hysteresis: enter quickly, leave slowly. A few hits in the
+        # rolling window flip the signal True; once True, it only flips back to
+        # False when the entire window is misses.
+        hits = sum(phone_buffer)
+        if phone_smoothed:
+            if hits == 0 and len(phone_buffer) >= _PHONE_EXIT_MISSES:
+                phone_smoothed = False
+        else:
+            if hits >= _PHONE_ENTER_HITS:
+                phone_smoothed = True
 
         smoothed = _majority(readings)
         avg_conf = sum(confidences) / len(confidences)
@@ -226,6 +244,7 @@ def _capture_loop() -> None:
                 timestamp=now,
                 phone_present=phone_smoothed,
             )
+        _first_frame.set()
 
         slack = period - (time.time() - loop_start)
         if slack > 0:
