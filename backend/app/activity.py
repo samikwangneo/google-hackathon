@@ -444,6 +444,21 @@ def _screen_ai_credentials_configured() -> bool:
     return _genai_use_vertex_ai() and bool(_genai_vertex_project())
 
 
+def _macos_accessibility_trusted() -> bool:
+    """Return False when macOS will reject keyboard/mouse event monitoring."""
+    if sys.platform != "darwin":
+        return True
+    try:
+        from ApplicationServices import AXIsProcessTrusted  # type: ignore
+
+        return bool(AXIsProcessTrusted())
+    except Exception as exc:
+        logger.debug("Could not check macOS Accessibility trust: %s", exc)
+        # If the trust API itself is unavailable, let pynput attempt startup so
+        # non-standard environments still get a chance to work.
+        return True
+
+
 def _build_genai_client() -> Tuple[Any, str]:
     _load_env_for_ai()
     from google import genai  # type: ignore
@@ -675,6 +690,14 @@ class ActivityTracker:
         logger.info("ActivityTracker stopped")
 
     def _start_input_listeners(self) -> None:
+        if not _macos_accessibility_trusted():
+            logger.warning(
+                "macOS Accessibility permission is not granted; IDLE/AWAY "
+                "input tracking is disabled. Grant Accessibility to the "
+                "terminal app running the backend, then restart."
+            )
+            return
+
         try:
             from pynput import keyboard, mouse  # type: ignore
         except Exception as exc:

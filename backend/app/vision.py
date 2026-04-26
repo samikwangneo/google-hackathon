@@ -15,6 +15,7 @@ import os
 import sys
 import threading
 import time
+import warnings
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Literal
@@ -23,6 +24,14 @@ import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# MediaPipe 0.10.x currently emits this protobuf deprecation warning repeatedly
+# during FaceMesh processing. It is harmless but buries the backend startup logs.
+warnings.filterwarnings(
+    "ignore",
+    message=r"SymbolDatabase\.GetPrototype\(\) is deprecated.*",
+    category=UserWarning,
+)
 
 PresenceState = Literal["PRESENT", "ABSENT", "LOOKING_AWAY"]
 
