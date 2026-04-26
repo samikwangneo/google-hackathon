@@ -3,7 +3,7 @@
 Owns:
     * Active-window/title polling (cross-platform, Mac-first)
     * Keyboard / mouse idle tracking via pynput (no key logging)
-    * Behavior classification: FOCUSED / DISTRACTED / IDLE / MULTITASKING / AWAY
+    * Behavior classification: FOCUSED / DISTRACTED / IDLE / AWAY
     * Pomodoro engine (lives here because completion is tied to focus tracking)
     * ``--mock-activity`` mode that cycles scripted states for the demo
 
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Public types
 # ---------------------------------------------------------------------------
 
-BehaviorState = Literal["FOCUSED", "DISTRACTED", "IDLE", "MULTITASKING", "AWAY"]
+BehaviorState = Literal["FOCUSED", "DISTRACTED", "IDLE", "AWAY"]
 
 
 @dataclass(frozen=True)
@@ -108,8 +108,6 @@ POLL_INTERVAL_S: float = 1.0
 IDLE_THRESHOLD_S: float = 30.0
 AWAY_THRESHOLD_S: float = 120.0
 SWITCH_WINDOW_S: float = 60.0
-SWITCH_CLASSIFY_WINDOW_S: float = 15.0
-MULTITASKING_SWITCH_THRESHOLD: int = 5  # >= N switches within SWITCH_WINDOW_S
 POMODORO_MIN_MINUTES: int = 1
 POMODORO_MAX_MINUTES: int = 180
 SCREEN_AI_DEFAULT_INTERVAL_S: float = 10.0
@@ -163,7 +161,6 @@ _URL_REGEX = re.compile(
 _MOCK_CYCLE: Tuple[Tuple[BehaviorState, float], ...] = (
     ("FOCUSED", 8.0),
     ("DISTRACTED", 6.0),
-    ("MULTITASKING", 4.0),
     ("IDLE", 4.0),
     ("AWAY", 4.0),
 )
@@ -507,7 +504,7 @@ def _parse_ai_behavior_state(value: object) -> Optional[BehaviorState]:
     if not isinstance(value, str):
         return None
     normalized = value.strip().upper()
-    if normalized in {"FOCUSED", "DISTRACTED", "IDLE", "MULTITASKING", "AWAY"}:
+    if normalized in {"FOCUSED", "DISTRACTED", "IDLE", "AWAY"}:
         return normalized  # type: ignore[return-value]
     return None
 
@@ -527,12 +524,11 @@ def _classify_screen_with_gemini(
         "Look at this screenshot and decide whether the student appears focused "
         "on productive study/work or distracted.\n\n"
         "Return ONLY JSON with this exact shape:\n"
-        '{"state":"FOCUSED|DISTRACTED|MULTITASKING|IDLE|AWAY",'
+        '{"state":"FOCUSED|DISTRACTED|IDLE|AWAY",'
         '"reason":"short reason under 80 chars","confidence":0.0}\n\n'
         "Rules:\n"
         "- FOCUSED: coding, docs, notes, textbooks, UMD/Canvas, research, IDEs, terminal.\n"
         "- DISTRACTED: YouTube/shorts, social feeds, memes, shopping, streaming, games.\n"
-        "- MULTITASKING: several unrelated apps/pages visible at once.\n"
         "- Do not infer IDLE/AWAY unless the screen is locked or blank; input tracking handles that.\n"
         "- Do not quote private screen text. Keep reason high level.\n\n"
         f"Known active app: {app or 'unknown'}\n"
@@ -808,9 +804,7 @@ class ActivityTracker:
         if not self._listeners_active:
             seconds_since_input = 0.0
 
-        classify_cutoff = now - timedelta(seconds=SWITCH_CLASSIFY_WINDOW_S)
-        recent_switches = sum(1 for ts in self._switch_history if ts >= classify_cutoff)
-        state = self._classify(app, title, url, seconds_since_input, recent_switches)
+        state = self._classify(app, title, url, seconds_since_input)
         state_source = "rules"
 
         # Screen AI is a fallback for exactly the case macOS often creates:
@@ -831,7 +825,6 @@ class ActivityTracker:
         title: Optional[str],
         url: Optional[str],
         seconds_since_input: float,
-        switches_in_window: int,
     ) -> BehaviorState:
         if seconds_since_input >= AWAY_THRESHOLD_S:
             return "AWAY"
@@ -843,8 +836,6 @@ class ActivityTracker:
             return "DISTRACTED"
         if any(p in haystack for p in FOCUS_PATTERNS):
             return "FOCUSED"
-        if switches_in_window >= MULTITASKING_SWITCH_THRESHOLD:
-            return "MULTITASKING"
         if haystack.strip():
             return "FOCUSED"
         return "IDLE"
@@ -973,14 +964,12 @@ class ActivityTracker:
         scripted_app = {
             "FOCUSED": "Cursor",
             "DISTRACTED": "Google Chrome",
-            "MULTITASKING": "Slack",
             "IDLE": None,
             "AWAY": None,
         }[chosen]
         scripted_title = {
             "FOCUSED": "activity.py — TerpPet — Cursor",
             "DISTRACTED": "TikTok - Make Your Day",
-            "MULTITASKING": "Slack | TerpPet | UMD Hackers",
             "IDLE": None,
             "AWAY": None,
         }[chosen]

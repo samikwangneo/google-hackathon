@@ -22,7 +22,6 @@ class BehaviorState(str, Enum):
     FOCUSED = "FOCUSED"
     DISTRACTED = "DISTRACTED"
     IDLE = "IDLE"
-    MULTITASKING = "MULTITASKING"
     AWAY = "AWAY"
 
 

@@ -29,7 +29,6 @@ from app import activity  # noqa: E402
 STATE_BADGES: Dict[str, str] = {
     "FOCUSED": "OK  ",
     "DISTRACTED": "WARN",
-    "MULTITASKING": "SWAP",
     "IDLE": "IDLE",
     "AWAY": "AWAY",
 }
@@ -69,10 +68,10 @@ What to try while this runs:
    - If window title is unavailable, rerun with --screen-ai so Gemini can look
      at a screenshot every 10 seconds and classify the visible page.
 
-3. Multitasking test:
-   - Rapidly Cmd-Tab between 5+ different windows within ~60 seconds.
-   - Expected: switches_60s climbs; state becomes MULTITASKING unless the
-     active window is an explicit distraction.
+3. App switching test:
+   - Cmd-Tab between windows.
+   - Expected: switches_60s climbs for debugging only; state stays focused or
+     distracted based on the visible content.
 
 4. Idle test:
    - Do not touch mouse or keyboard for 30+ seconds.
@@ -175,7 +174,7 @@ def run(
         )
 
     print(
-        "Legend: OK=FOCUSED, WARN=DISTRACTED, SWAP=MULTITASKING, "
+        "Legend: OK=FOCUSED, WARN=DISTRACTED, "
         "IDLE=inactive, AWAY=long inactive\n"
     )
 
