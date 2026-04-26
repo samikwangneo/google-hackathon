@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import activity, ai, brain, state, umd
+from . import activity, ai, brain, state, umd, vision
 from .schemas import (
     BrainSearchResponse,
     BrainTodayResponse,
@@ -34,7 +35,31 @@ from .schemas import (
 
 log = logging.getLogger("terppet.main")
 
-app = FastAPI(title="TerpPet backend", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        vision.start()
+    except Exception as exc:  # pragma: no cover — webcam may be unavailable
+        log.warning("vision.start() failed: %s", exc)
+    try:
+        activity.start_tracking()
+    except Exception as exc:  # pragma: no cover — sensors may be unavailable
+        log.warning("activity.start_tracking() failed: %s", exc)
+    try:
+        yield
+    finally:
+        try:
+            activity.stop_tracking()
+        except Exception as exc:  # pragma: no cover
+            log.warning("activity.stop_tracking() failed: %s", exc)
+        try:
+            vision.stop()
+        except Exception as exc:  # pragma: no cover
+            log.warning("vision.stop() failed: %s", exc)
+
+
+app = FastAPI(title="TerpPet backend", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,18 +87,18 @@ def health() -> OkResponse:
 
 @app.post("/api/pomodoro/start", response_model=PomodoroStartResponse)
 def pomodoro_start(req: PomodoroStartRequest) -> PomodoroStartResponse:
-    started_at, ends_at = activity.start_pomodoro(req.minutes)
+    pomo = activity.pomodoro_start(req.minutes)
     brain.log_event(
         "pomodoro_started",
         f"Started a {req.minutes}-minute Pomodoro",
         {"minutes": req.minutes},
     )
-    return PomodoroStartResponse(started_at=started_at, ends_at=ends_at)
+    return PomodoroStartResponse(started_at=pomo.started_at, ends_at=pomo.ends_at)
 
 
 @app.post("/api/pomodoro/stop", response_model=OkResponse)
 def pomodoro_stop() -> OkResponse:
-    activity.stop_pomodoro()
+    activity.pomodoro_stop()
     brain.log_event("pomodoro_stopped", "Stopped Pomodoro early")
     return OkResponse(ok=True)
 
