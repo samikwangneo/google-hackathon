@@ -4,16 +4,18 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 function createWindow(): void {
-  const overlayWidth = 430
   const overlayHeight = 560
   const margin = 18
   const workArea = screen.getPrimaryDisplay().workArea
+
+  // Span the full screen width so the pet can walk across the whole display.
+  const overlayWidth = workArea.width
 
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: overlayWidth,
     height: overlayHeight,
-    x: workArea.x + workArea.width - overlayWidth - margin,
+    x: workArea.x,
     y: workArea.y + workArea.height - overlayHeight - margin,
     show: false,
     frame: false,
