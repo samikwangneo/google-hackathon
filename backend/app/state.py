@@ -35,6 +35,10 @@ LEVEL_THRESHOLDS: list[int] = [0, 100, 250, 500, 1000, 2000, 4000]
 # How long GOOD_APPLE / BAD_APPLE moods stick after their triggering event.
 APPLE_DURATION_S: float = 10.0
 
+# How long EVOLVED stays pinned after a level-up event. Outranks every other
+# mood (apples, sleepy, etc.) so the level-up animation always plays cleanly.
+EVOLVED_DURATION_S: float = 10.0
+
 # Max time the pet stays in the WALKING neutral substate before auto-advancing
 # to the next entry in the neutral cycle. Other neutral substates hold until
 # the mood category changes.
@@ -81,9 +85,19 @@ _last_mood_category: Optional[str] = None
 _good_apple_until: Optional[float] = None
 _bad_apple_until: Optional[float] = None
 
+# Level-up "EVOLVED" deadline. Same shape as the apple windows but checked
+# first in _resolve_mood so the level-up animation plays for the full duration
+# even when a pomodoro completion already armed _good_apple_until.
+_evolved_until: Optional[float] = None
+
 # Cumulative annoyed time during the current pomodoro (monotonic seconds).
 # Only ticks while a pomodoro is running and base category == "ANNOYED".
 _annoyed_streak_started_at: Optional[float] = None
+
+# Whether a pomodoro was running at the end of the previous aggregate tick.
+# Used to detect a True->False transition that wasn't a normal completion,
+# i.e. the user manually clicked Stop mid-session.
+_pomo_running_last_tick: bool = False
 
 # When the current WALKING neutral substate began (monotonic seconds). None
 # whenever the active substate isn't WALKING.
@@ -159,7 +173,7 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
     global _xp, _level, _focus_seconds, _pomodoros_completed, _just_evolved
     global _neutral_idx, _annoyed_idx, _last_mood_category
     global _good_apple_until, _bad_apple_until, _annoyed_streak_started_at
-    global _walking_started_at
+    global _walking_started_at, _pomo_running_last_tick, _evolved_until
 
     now_monotonic = time.monotonic()
 
@@ -187,6 +201,21 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
             _bad_apple_until = None
             _annoyed_streak_started_at = None
 
+        # Manual stop detection: a pomo was running last tick, isn't now, and
+        # no completion was drained → user clicked Stop. Treat as a give-up
+        # and trigger the BAD_APPLE window (same as the auto-fail path).
+        # Skipped on the auto-fail tick because that path locally flips the
+        # running flag *after* this check, so pomodoro_raw still says True.
+        if (
+            _pomo_running_last_tick
+            and not pomodoro_raw.running
+            and not completions
+        ):
+            _pending_events.append({"type": "pomodoro_stopped_early"})
+            _bad_apple_until = now_monotonic + APPLE_DURATION_S
+            _good_apple_until = None
+            _annoyed_streak_started_at = None
+
         # Level-up detection (crosses one or more thresholds)
         new_level = _level_for_xp(_xp)
         evolved_this_tick = False
@@ -195,6 +224,12 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
                 _pending_events.append({"type": "level_up", "level": lvl})
             _level = new_level
             evolved_this_tick = True
+            # Pin EVOLVED for the full duration and suppress any apple windows
+            # so the level-up animation doesn't get clobbered by the GOOD_APPLE
+            # window the pomodoro-completion branch above already armed.
+            _evolved_until = now_monotonic + EVOLVED_DURATION_S
+            _good_apple_until = None
+            _bad_apple_until = None
 
         # Focus-time accounting
         if activity_snap.state == BehaviorState.FOCUSED:
@@ -259,6 +294,11 @@ def aggregate(tick_seconds: float = 1.0) -> BehaviorUpdate:
         # Resolve final mood (apple windows + sub-state rotation).
         mood = _resolve_mood(category, now_monotonic)
 
+        # Remember running state for next-tick manual-stop detection. Use the
+        # post-auto-fail value so the auto-fail tick doesn't double-trigger
+        # BAD_APPLE on the following tick.
+        _pomo_running_last_tick = pomodoro.running
+
         return BehaviorUpdate(
             state=activity_snap.state,
             presence=presence_snap.state,
@@ -277,6 +317,10 @@ def _resolve_mood(category: str, now_monotonic: float) -> PetMood:
     """Layer EVOLVED / GOOD_APPLE / BAD_APPLE windows on top of the base category,
     then map NEUTRAL / ANNOYED categories to their rotated sub-states.
     """
+    # EVOLVED always wins for its full window so the level-up animation gets
+    # the screen to itself (no apple/sleepy/annoyed bleed-through).
+    if _evolved_until is not None and now_monotonic < _evolved_until:
+        return PetMood.EVOLVED
     if category == "EVOLVED":
         return PetMood.EVOLVED
     if _good_apple_until is not None and now_monotonic < _good_apple_until:

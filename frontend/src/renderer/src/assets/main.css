@@ -782,6 +782,12 @@ button {
 
 .evolution-effect strong {
   position: absolute;
+  /* The parent .evolution-effect sits over the pet's center. Anchor the
+     banner's right edge 200px left of that, which puts it well clear of the
+     pet's home left edge (~156px from screen-right). */
+  right: 200px;
+  top: 50%;
+  transform: translateY(-50%);
   min-width: 116px;
   padding: 10px 13px;
   border-radius: 999px;
@@ -789,4 +795,5 @@ button {
   color: var(--ink);
   font-weight: 1000;
   text-align: center;
+  white-space: nowrap;
 }

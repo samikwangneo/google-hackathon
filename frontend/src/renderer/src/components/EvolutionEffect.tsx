@@ -10,7 +10,7 @@ export function EvolutionEffect(): React.JSX.Element {
 
   useEffect(() => {
     if (!showEvolution) return
-    const timeout = window.setTimeout(clearEvolution, 2400)
+    const timeout = window.setTimeout(clearEvolution, 10000)
     return () => window.clearTimeout(timeout)
   }, [clearEvolution, showEvolution])
 
@@ -34,10 +34,15 @@ export function EvolutionEffect(): React.JSX.Element {
                 x: Math.cos((index * 20 * Math.PI) / 180) * 112,
                 y: Math.sin((index * 20 * Math.PI) / 180) * 112
               }}
-              transition={{ duration: 1.2, delay: index * 0.018 }}
+              transition={{
+                duration: 1.2,
+                delay: index * 0.018,
+                repeat: Infinity,
+                repeatDelay: 1.4
+              }}
             />
           ))}
-          <motion.strong initial={{ y: 12 }} animate={{ y: 0 }}>
+          <motion.strong initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             Level {level}
           </motion.strong>
         </motion.div>
