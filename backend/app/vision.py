@@ -31,6 +31,11 @@ try:
 except ImportError:
     mp = None  # type: ignore
 
+try:
+    from ultralytics import YOLO  # type: ignore
+except ImportError:
+    YOLO = None  # type: ignore
+
 
 @dataclass(frozen=True)
 class PresenceSnapshot:
@@ -39,6 +44,7 @@ class PresenceSnapshot:
     backend: str       # "mediapipe" | "haar" | "none"
     fps: float
     timestamp: float
+    phone_present: bool = False  # orthogonal signal from YOLO; False if detection disabled
 
 
 _TARGET_FPS = 5
@@ -47,6 +53,11 @@ _GAZE_YAW_THRESHOLD = 0.30  # normalized horizontal offset of nose vs face cente
 _CAMERA_INDEX_ENV = "VISION_CAMERA_INDEX"
 _DEFAULT_MAC_CAMERA_INDEX = 1
 
+_PHONE_COCO_CLASS = 67          # "cell phone" in COCO
+_PHONE_CONF_THRESHOLD = 0.5
+_PHONE_CHECK_EVERY_N = 2        # run YOLO every Nth capture frame
+_PHONE_BUFFER_SIZE = 4          # smoothing window for phone signal
+
 _lock = threading.Lock()
 _latest: PresenceSnapshot | None = None
 _thread: threading.Thread | None = None
@@ -54,6 +65,7 @@ _stop = threading.Event()
 _cap: "cv2.VideoCapture | None" = None
 _detector: "Detector | None" = None
 _backend_name: str = "none"
+_phone_model: object | None = None
 
 
 def current_presence() -> PresenceSnapshot:
@@ -69,7 +81,7 @@ def start() -> None:
     TFLite model — by the time start() returns, current_presence() will return
     real data on the next frame.
     """
-    global _thread, _cap, _detector, _backend_name
+    global _thread, _cap, _detector, _backend_name, _phone_model
     if _thread is not None and _thread.is_alive():
         return
 
@@ -85,9 +97,26 @@ def start() -> None:
     _backend_name, _detector = _make_detector()
     log.info("vision: detector backend = %s, ready", _backend_name)
 
+    _phone_model = _try_yolo()
+
     _stop.clear()
     _thread = threading.Thread(target=_capture_loop, name="vision", daemon=True)
     _thread.start()
+
+
+def _try_yolo() -> object | None:
+    """Load YOLOv8n for phone detection. None if ultralytics not installed or load fails."""
+    if YOLO is None:
+        log.info("vision: ultralytics not installed; phone detection disabled")
+        return None
+    try:
+        log.info("vision: loading YOLOv8n for phone detection (downloads ~6MB on first run)...")
+        model = YOLO("yolov8n.pt")
+        log.info("vision: YOLOv8n ready")
+        return model
+    except Exception as e:
+        log.warning("vision: YOLO init failed (%s); phone detection disabled", e)
+        return None
 
 
 def _select_camera_index() -> int:
@@ -124,13 +153,16 @@ def _capture_loop() -> None:
     cap = _cap
     detect = _detector
     backend = _backend_name
+    phone_model = _phone_model
     assert cap is not None and detect is not None, "start() must run first"
 
     readings: deque[PresenceState] = deque(maxlen=_BUFFER_SIZE)
     confidences: deque[float] = deque(maxlen=_BUFFER_SIZE)
+    phone_buffer: deque[bool] = deque(maxlen=_PHONE_BUFFER_SIZE)
     period = 1.0 / _TARGET_FPS
     last_tick = time.time()
     fps_smoothed = 0.0
+    frame_idx = 0
 
     logged_dims = False
     while not _stop.is_set():
@@ -155,6 +187,27 @@ def _capture_loop() -> None:
         readings.append(state)
         confidences.append(conf)
 
+        # Phone check runs every Nth frame so it doesn't dominate the budget.
+        # Skip frames just reuse the smoothed buffer's current verdict.
+        frame_idx += 1
+        if phone_model is not None and frame_idx % _PHONE_CHECK_EVERY_N == 0:
+            try:
+                results = phone_model(  # type: ignore[operator]
+                    frame,
+                    classes=[_PHONE_COCO_CLASS],
+                    conf=_PHONE_CONF_THRESHOLD,
+                    verbose=False,
+                )
+                phone_now = len(results[0].boxes) > 0
+                log.debug("yolo: phone=%s", phone_now)
+            except Exception:
+                log.exception("vision: YOLO error on frame; skipping phone check")
+                phone_now = phone_buffer[-1] if phone_buffer else False
+            phone_buffer.append(phone_now)
+
+        # Majority vote so a single false positive doesn't flip the pet
+        phone_smoothed = bool(phone_buffer) and sum(phone_buffer) > len(phone_buffer) / 2
+
         smoothed = _majority(readings)
         avg_conf = sum(confidences) / len(confidences)
 
@@ -170,6 +223,7 @@ def _capture_loop() -> None:
                 backend=backend,
                 fps=fps_smoothed,
                 timestamp=now,
+                phone_present=phone_smoothed,
             )
 
         slack = period - (time.time() - loop_start)
