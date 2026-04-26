@@ -1,15 +1,29 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 function createWindow(): void {
+  const overlayWidth = 430
+  const overlayHeight = 560
+  const margin = 18
+  const workArea = screen.getPrimaryDisplay().workArea
+
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: overlayWidth,
+    height: overlayHeight,
+    x: workArea.x + workArea.width - overlayWidth - margin,
+    y: workArea.y + workArea.height - overlayHeight - margin,
     show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    hasShadow: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
     autoHideMenuBar: true,
+    backgroundColor: '#00000000',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -18,7 +32,10 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    mainWindow.setAlwaysOnTop(true, 'screen-saver')
+    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    mainWindow.setFullScreenable(false)
+    mainWindow.showInactive()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -41,6 +58,9 @@ function createWindow(): void {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
+  if (process.platform === 'darwin') {
+    app.dock?.hide()
+  }
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
