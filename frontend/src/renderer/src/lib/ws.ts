@@ -3,8 +3,7 @@ import type { BehaviorSocketFrame } from '../types/contracts'
 export type SocketStatus = 'connecting' | 'open' | 'closed'
 
 const WS_URL =
-  (import.meta.env.VITE_BACKEND_WS_URL as string | undefined) ??
-  'ws://127.0.0.1:8765/ws/state'
+  (import.meta.env.VITE_BACKEND_WS_URL as string | undefined) ?? 'ws://127.0.0.1:8765/ws/state'
 
 const RECONNECT_DELAY_MS = 2000
 
