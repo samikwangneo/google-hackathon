@@ -41,6 +41,8 @@ function App(): React.JSX.Element {
   const closePanel = useTerpPetStore((state) => state.closePanel)
   const applyFrame = useTerpPetStore((state) => state.applyFrame)
   const setConnectionStatus = useTerpPetStore((state) => state.setConnectionStatus)
+  const connectionStatus = useTerpPetStore((state) => state.connectionStatus)
+  const lastFrameAt = useTerpPetStore((state) => state.lastFrameAt)
 
   useEffect(() => {
     const socket = connectBehaviorSocket(applyFrame, setConnectionStatus)
@@ -80,8 +82,22 @@ function App(): React.JSX.Element {
     }
   }, [])
 
+  const pillLabel =
+    connectionStatus === 'open'
+      ? lastFrameAt
+        ? `live · ${Math.max(0, Math.round((Date.now() - lastFrameAt) / 1000))}s ago`
+        : 'live'
+      : connectionStatus
+
   return (
     <main className="app-shell">
+      <div
+        className={`connection-pill connection-pill--${connectionStatus}`}
+        title={`WebSocket: ${connectionStatus}`}
+      >
+        <span />
+        {pillLabel}
+      </div>
       <AnimatePresence mode="wait">
         {activePanel && (
           <motion.div

@@ -46,6 +46,7 @@ class PetMood(str, Enum):
     ANNOYED_FOOT_TAPPING = "ANNOYED_FOOT_TAPPING"
     ANNOYED_DOOM_SCROLLING = "ANNOYED_DOOM_SCROLLING"
     EXAM_PANIC_MODE = "EXAM_PANIC_MODE"
+    WALKING = "WALKING"
 
 
 # ---------------------------------------------------------------------------

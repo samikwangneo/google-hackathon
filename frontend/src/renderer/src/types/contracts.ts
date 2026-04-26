@@ -17,6 +17,7 @@ export type PetMood =
   | 'ANNOYED_FOOT_TAPPING'
   | 'ANNOYED_DOOM_SCROLLING'
   | 'EXAM_PANIC_MODE'
+  | 'WALKING'
 
 export interface PomodoroState {
   running: boolean

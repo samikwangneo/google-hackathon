@@ -10,7 +10,9 @@ Run:  uvicorn app.main:app --port 8765
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
+import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -35,20 +37,30 @@ from .schemas import (
 
 log = logging.getLogger("terppet.main")
 
+_ws_client_counter = itertools.count(1)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    log.info("lifespan: starting vision...")
     try:
         vision.start()
+        log.info("lifespan: vision.start() returned")
     except Exception as exc:  # pragma: no cover — webcam may be unavailable
-        log.warning("vision.start() failed: %s", exc)
+        log.warning("vision.start() failed: %s\n%s", exc, traceback.format_exc())
+    log.info("lifespan: starting activity tracker...")
     try:
         activity.start_tracking()
+        log.info("lifespan: activity.start_tracking() returned")
     except Exception as exc:  # pragma: no cover — sensors may be unavailable
-        log.warning("activity.start_tracking() failed: %s", exc)
+        log.warning(
+            "activity.start_tracking() failed: %s\n%s", exc, traceback.format_exc()
+        )
+    log.info("lifespan: ready, accepting requests")
     try:
         yield
     finally:
+        log.info("lifespan: shutting down")
         try:
             activity.stop_tracking()
         except Exception as exc:  # pragma: no cover
@@ -176,27 +188,75 @@ def stats_today() -> StatsTodayResponse:
 
 
 WS_TICK_SECONDS = 1.0
+# Print every Nth frame at INFO so logs stay readable but you can see the
+# stream is alive. The first frame and any errors always log.
+WS_FRAME_LOG_EVERY = 5
 
 
 @app.websocket("/ws/state")
 async def ws_state(websocket: WebSocket) -> None:
+    client_id = next(_ws_client_counter)
+    peer = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "?"
+    log.info("ws_state[%d]: connection from %s, accepting...", client_id, peer)
     await websocket.accept()
+    log.info("ws_state[%d]: accepted; entering send loop", client_id)
+    frames_sent = 0
     try:
         while True:
-            update = state.aggregate(tick_seconds=WS_TICK_SECONDS)
-            await websocket.send_text(update.model_dump_json())
+            try:
+                update = state.aggregate(tick_seconds=WS_TICK_SECONDS)
+            except Exception as exc:
+                log.exception("ws_state[%d]: state.aggregate() raised: %s", client_id, exc)
+                await asyncio.sleep(WS_TICK_SECONDS)
+                continue
+
+            try:
+                payload = update.model_dump_json()
+            except Exception as exc:
+                log.exception(
+                    "ws_state[%d]: model_dump_json() raised: %s", client_id, exc
+                )
+                await asyncio.sleep(WS_TICK_SECONDS)
+                continue
+
+            await websocket.send_text(payload)
+            frames_sent += 1
+            if frames_sent == 1 or frames_sent % WS_FRAME_LOG_EVERY == 0:
+                log.info(
+                    "ws_state[%d]: sent frame #%d state=%s presence=%s mood=%s xp=%d lvl=%d window=%r",
+                    client_id,
+                    frames_sent,
+                    update.state.value if hasattr(update.state, "value") else update.state,
+                    update.presence.value if hasattr(update.presence, "value") else update.presence,
+                    update.pet_mood.value if hasattr(update.pet_mood, "value") else update.pet_mood,
+                    update.xp,
+                    update.level,
+                    (update.active_window or "")[:60],
+                )
 
             # Drain and forward special events on the same socket.
             for event in state.drain_events():
+                log.info("ws_state[%d]: special event %r", client_id, event)
                 await websocket.send_json(event)
                 kind = event.get("type", "event")
                 brain.log_event(kind, f"event: {kind}", event)
 
             await asyncio.sleep(WS_TICK_SECONDS)
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as exc:
+        log.info(
+            "ws_state[%d]: client disconnected after %d frame(s) (code=%s)",
+            client_id,
+            frames_sent,
+            getattr(exc, "code", "?"),
+        )
         return
     except Exception as exc:  # pragma: no cover — keep the loop robust
-        log.warning("ws_state loop error: %s", exc)
+        log.exception(
+            "ws_state[%d]: loop error after %d frame(s): %s",
+            client_id,
+            frames_sent,
+            exc,
+        )
         try:
             await websocket.close()
         except Exception:
