@@ -80,6 +80,7 @@ class BehaviorUpdate(BaseModel):
     xp: int = 0
     level: int = 1
     pomodoro: PomodoroState
+    phone_present: bool = False
 
 
 # ---------------------------------------------------------------------------
