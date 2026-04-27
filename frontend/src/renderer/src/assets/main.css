@@ -109,6 +109,105 @@ button {
   user-select: none;
 }
 
+.pet--animation-viewer {
+  filter: drop-shadow(0 0 18px rgba(255, 213, 74, 0.48));
+}
+
+.animation-viewer {
+  position: absolute;
+  right: 22px;
+  bottom: 170px;
+  z-index: 8;
+  width: 298px;
+  padding: 14px;
+  border: 1px solid rgba(255, 213, 74, 0.34);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255, 213, 74, 0.22), transparent 34%),
+    linear-gradient(145deg, rgba(216, 30, 63, 0.24), rgba(14, 10, 8, 0.92) 42%), var(--glass);
+  box-shadow: var(--shadow);
+  -webkit-app-region: no-drag;
+  backdrop-filter: blur(18px);
+}
+
+.animation-viewer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  color: #fff7db;
+  font-size: 12px;
+  font-weight: 1000;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.animation-viewer__header strong {
+  display: grid;
+  min-width: 31px;
+  height: 31px;
+  place-items: center;
+  border: 1px solid rgba(255, 213, 74, 0.5);
+  border-radius: 999px;
+  color: var(--terp-gold);
+}
+
+.animation-viewer__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.animation-viewer__item {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 6px;
+  align-items: center;
+  min-height: 35px;
+  border: 1px solid rgba(255, 245, 214, 0.15);
+  border-radius: 12px;
+  padding: 6px;
+  background: rgba(255, 245, 214, 0.08);
+  color: rgba(255, 245, 214, 0.78);
+  cursor: pointer;
+  text-align: left;
+}
+
+.animation-viewer__item:hover,
+.animation-viewer__item.is-active {
+  border-color: rgba(255, 213, 74, 0.72);
+  background: rgba(255, 213, 74, 0.16);
+  color: #fff7db;
+}
+
+.animation-viewer__item kbd {
+  display: grid;
+  height: 23px;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(14, 10, 8, 0.66);
+  color: var(--terp-gold);
+  font-size: 11px;
+  font-weight: 1000;
+}
+
+.animation-viewer__item span {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.animation-viewer p {
+  margin: 10px 2px 0;
+  color: rgba(255, 245, 214, 0.58);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .pet__aura {
   position: absolute;
   inset: 28px 15px 25px;
